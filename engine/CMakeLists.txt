@@ -10,6 +10,13 @@ add_library(VulkanEngine STATIC
     src/renderer/mesh.cpp
     src/renderer/vk_descriptors.cpp
     src/renderer/renderer.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_draw.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_tables.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_widgets.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_demo.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_impl_glfw.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_impl_vulkan.cpp
 )
 
 target_include_directories(VulkanEngine
@@ -17,6 +24,7 @@ target_include_directories(VulkanEngine
     PRIVATE src
             ${CMAKE_SOURCE_DIR}/third_party/stb
             ${CMAKE_SOURCE_DIR}/third_party/tinyobj
+            ${CMAKE_SOURCE_DIR}/third_party/imgui
 )
 
 target_link_libraries(VulkanEngine

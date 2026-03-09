@@ -13,6 +13,7 @@ public:
 
     glm::mat4 getViewMatrix() const;
     glm::mat4 getProjectionMatrix(float aspect) const;
+    glm::vec3 getPosition() const { return position_; }
 
     void processKeyboard(Window& window, float delta_time);
     void processMouse(float x_offset, float y_offset);
@@ -31,6 +32,15 @@ private:
     float speed_ = 2.5f;
     float sensitivity_ = 0.1f;
     float fov_ = 45.0f;
+
+    float vertical_velocity_ = 0.0f;
+    bool grounded_ = false;
+
+    static constexpr float kGravity = 20.0f;
+    static constexpr float kJumpImpulse = 7.0f;
+    static constexpr float kEyeHeight = 1.7f;
+    static constexpr float kGroundZ = -0.5f;
+    static constexpr float kMinZ = kGroundZ + kEyeHeight;
 };
 
 }  // namespace engine

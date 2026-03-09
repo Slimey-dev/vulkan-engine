@@ -1,9 +1,26 @@
+# Build
 build/
+build-*/
 cmake-build-*/
 *.spv
+compile_commands.json
+
+# IDE
 .idea/
 .vscode/
 *.swp
 *~
+
+# macOS
 .DS_Store
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+
+# Linux
 .cache/
+
+# ImGui
+imgui.ini

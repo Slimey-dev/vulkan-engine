@@ -11,7 +11,12 @@ Window::Window(uint32_t width, uint32_t height, const std::string& title)
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-    window_ = glfwCreateWindow(width_, height_, title.c_str(), nullptr, nullptr);
+    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+    width_ = mode->width;
+    height_ = mode->height;
+
+    window_ = glfwCreateWindow(width_, height_, title.c_str(), monitor, nullptr);
     if (!window_) {
         glfwTerminate();
         throw std::runtime_error("Failed to create GLFW window");
@@ -21,6 +26,7 @@ Window::Window(uint32_t width, uint32_t height, const std::string& title)
     glfwSetFramebufferSizeCallback(window_, framebufferResizeCallback);
     glfwSetCursorPosCallback(window_, cursorPosCallback);
     glfwSetScrollCallback(window_, scrollCallback);
+    glfwSetKeyCallback(window_, keyCallback);
 
     logInfo("Window created: {}x{}", width_, height_);
 }
@@ -99,6 +105,18 @@ void Window::cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
 void Window::scrollCallback(GLFWwindow* window, double /*xoffset*/, double yoffset) {
     auto* self = static_cast<Window*>(glfwGetWindowUserPointer(window));
     self->scroll_dy_ += static_cast<float>(yoffset);
+}
+
+void Window::keyCallback(GLFWwindow* window, int key, int /*scancode*/, int action, int /*mods*/) {
+    auto* self = static_cast<Window*>(glfwGetWindowUserPointer(window));
+    if (key == GLFW_KEY_TAB && action == GLFW_PRESS) {
+        self->toggleUIMode();
+    }
+}
+
+void Window::toggleUIMode() {
+    ui_mode_ = !ui_mode_;
+    setCursorCaptured(!ui_mode_);
 }
 
 }  // namespace engine

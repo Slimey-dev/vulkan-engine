@@ -22,6 +22,9 @@ public:
     VkExtent2D getExtent() const { return extent_; }
     VkFormat getImageFormat() const { return image_format_; }
     uint32_t getImageCount() const { return static_cast<uint32_t>(images_.size()); }
+    VkImage getImage(uint32_t index) const { return images_[index]; }
+    VkImageView getImageView(uint32_t index) const { return image_views_[index]; }
+    VkFormat getDepthFormat() const { return depth_format_; }
 
     void recreate(VkExtent2D new_extent);
 

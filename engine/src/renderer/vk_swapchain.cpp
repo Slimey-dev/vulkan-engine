@@ -68,7 +68,7 @@ void VulkanSwapchain::create(VkExtent2D window_extent) {
     info.imageColorSpace = format.colorSpace;
     info.imageExtent = extent;
     info.imageArrayLayers = 1;
-    info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
     auto indices = device_.getQueueFamilies();
     uint32_t family_indices[] = {indices.graphics.value(), indices.present.value()};

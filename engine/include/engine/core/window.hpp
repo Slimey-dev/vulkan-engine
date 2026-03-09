@@ -29,11 +29,14 @@ public:
     float getScrollDelta();
     void setCursorCaptured(bool captured);
     bool isCursorCaptured() const { return cursor_captured_; }
+    void toggleUIMode();
+    bool isUIMode() const { return ui_mode_; }
 
 private:
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
     static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos);
     static void scrollCallback(GLFWwindow* window, double xoffset, double yoffset);
+    static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
 
     GLFWwindow* window_ = nullptr;
     uint32_t width_;
@@ -47,6 +50,7 @@ private:
     float scroll_dy_ = 0.0f;
     bool cursor_captured_ = false;
     bool first_mouse_ = true;
+    bool ui_mode_ = false;
 };
 
 }  // namespace engine

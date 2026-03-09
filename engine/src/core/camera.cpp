@@ -35,8 +35,19 @@ void Camera::processKeyboard(Window& window, float delta_time) {
     if (window.isKeyPressed(GLFW_KEY_S)) position_ -= forward * velocity;
     if (window.isKeyPressed(GLFW_KEY_A)) position_ -= strafe * velocity;
     if (window.isKeyPressed(GLFW_KEY_D)) position_ += strafe * velocity;
-    if (window.isKeyPressed(GLFW_KEY_SPACE)) position_ += kWorldUp * velocity;
-    if (window.isKeyPressed(GLFW_KEY_LEFT_CONTROL)) position_ -= kWorldUp * velocity;
+    if (window.isKeyPressed(GLFW_KEY_SPACE) && grounded_) {
+        vertical_velocity_ = kJumpImpulse;
+        grounded_ = false;
+    }
+
+    vertical_velocity_ -= kGravity * delta_time;
+    position_.z += vertical_velocity_ * delta_time;
+
+    if (position_.z <= kMinZ) {
+        position_.z = kMinZ;
+        vertical_velocity_ = 0.0f;
+        grounded_ = true;
+    }
 }
 
 void Camera::processMouse(float x_offset, float y_offset) {

@@ -71,6 +71,14 @@ void transitionImageLayout(VkDevice device, VkCommandPool pool, VkQueue queue, V
 void copyBufferToImage(VkDevice device, VkCommandPool pool, VkQueue queue, VkBuffer buffer,
                        VkImage image, uint32_t width, uint32_t height);
 
+void transitionImageLayout(VkDevice device, VkCommandPool pool, VkQueue queue, VkImage image,
+                           VkImageLayout old_layout, VkImageLayout new_layout,
+                           uint32_t layer_count);
+
+void copyBufferToImage(VkDevice device, VkCommandPool pool, VkQueue queue, VkBuffer buffer,
+                       VkImage image, uint32_t width, uint32_t height,
+                       uint32_t layer_count, VkDeviceSize layer_size);
+
 }  // namespace vk_buffer
 
 }  // namespace engine
