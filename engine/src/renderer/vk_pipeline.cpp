@@ -6,8 +6,12 @@
 
 namespace engine {
 
-VulkanPipeline::VulkanPipeline(VkDevice device, VkRenderPass render_pass, VkExtent2D /*extent*/,
-                               const std::string& vert_path, const std::string& frag_path)
+VulkanPipeline::VulkanPipeline(
+    VkDevice device, VkRenderPass render_pass, const std::string& vert_path,
+    const std::string& frag_path,
+    const std::vector<VkVertexInputBindingDescription>& bindings,
+    const std::vector<VkVertexInputAttributeDescription>& attributes,
+    VkDescriptorSetLayout descriptor_set_layout)
     : device_(device) {
     auto vert_code = readFile(vert_path);
     auto frag_code = readFile(frag_path);
@@ -31,6 +35,10 @@ VulkanPipeline::VulkanPipeline(VkDevice device, VkRenderPass render_pass, VkExte
 
     VkPipelineVertexInputStateCreateInfo vertex_input{};
     vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertex_input.vertexBindingDescriptionCount = static_cast<uint32_t>(bindings.size());
+    vertex_input.pVertexBindingDescriptions = bindings.data();
+    vertex_input.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributes.size());
+    vertex_input.pVertexAttributeDescriptions = attributes.data();
 
     VkPipelineInputAssemblyStateCreateInfo input_assembly{};
     input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -53,7 +61,7 @@ VulkanPipeline::VulkanPipeline(VkDevice device, VkRenderPass render_pass, VkExte
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
     rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
     VkPipelineMultisampleStateCreateInfo multisampling{};
     multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -70,12 +78,24 @@ VulkanPipeline::VulkanPipeline(VkDevice device, VkRenderPass render_pass, VkExte
 
     VkPipelineLayoutCreateInfo layout_info{};
     layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    if (descriptor_set_layout != VK_NULL_HANDLE) {
+        layout_info.setLayoutCount = 1;
+        layout_info.pSetLayouts = &descriptor_set_layout;
+    }
 
     if (vkCreatePipelineLayout(device_, &layout_info, nullptr, &layout_) != VK_SUCCESS) {
         vkDestroyShaderModule(device_, vert_module, nullptr);
         vkDestroyShaderModule(device_, frag_module, nullptr);
         throw std::runtime_error("Failed to create pipeline layout");
     }
+
+    VkPipelineDepthStencilStateCreateInfo depth_stencil{};
+    depth_stencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depth_stencil.depthTestEnable = VK_TRUE;
+    depth_stencil.depthWriteEnable = VK_TRUE;
+    depth_stencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depth_stencil.depthBoundsTestEnable = VK_FALSE;
+    depth_stencil.stencilTestEnable = VK_FALSE;
 
     VkGraphicsPipelineCreateInfo pipeline_info{};
     pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -85,6 +105,7 @@ VulkanPipeline::VulkanPipeline(VkDevice device, VkRenderPass render_pass, VkExte
     pipeline_info.pInputAssemblyState = &input_assembly;
     pipeline_info.pViewportState = &viewport_state;
     pipeline_info.pRasterizationState = &rasterizer;
+    pipeline_info.pDepthStencilState = &depth_stencil;
     pipeline_info.pMultisampleState = &multisampling;
     pipeline_info.pColorBlendState = &color_blending;
     pipeline_info.pDynamicState = &dynamic_state;

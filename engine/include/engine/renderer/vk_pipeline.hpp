@@ -9,8 +9,11 @@ namespace engine {
 
 class VulkanPipeline {
 public:
-    VulkanPipeline(VkDevice device, VkRenderPass render_pass, VkExtent2D extent,
-                   const std::string& vert_path, const std::string& frag_path);
+    VulkanPipeline(VkDevice device, VkRenderPass render_pass,
+                   const std::string& vert_path, const std::string& frag_path,
+                   const std::vector<VkVertexInputBindingDescription>& bindings,
+                   const std::vector<VkVertexInputAttributeDescription>& attributes,
+                   VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE);
     ~VulkanPipeline();
 
     VulkanPipeline(const VulkanPipeline&) = delete;

@@ -4,6 +4,8 @@ add_library(VulkanEngine STATIC
     src/renderer/vk_device.cpp
     src/renderer/vk_swapchain.cpp
     src/renderer/vk_pipeline.cpp
+    src/renderer/vk_buffer.cpp
+    src/renderer/vk_descriptors.cpp
     src/renderer/renderer.cpp
 )
 

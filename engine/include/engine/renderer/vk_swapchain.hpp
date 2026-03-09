@@ -28,10 +28,15 @@ public:
 private:
     void create(VkExtent2D window_extent);
     void createImageViews();
+    void createDepthResources();
     void createRenderPass();
     void createFramebuffers();
+    void cleanupDepthResources();
     void cleanup();
 
+    VkFormat findDepthFormat();
+    VkFormat findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling,
+                                VkFormatFeatureFlags features);
     VkSurfaceFormatKHR chooseSurfaceFormat();
     VkPresentModeKHR choosePresentMode();
     VkExtent2D chooseExtent(const VkSurfaceCapabilitiesKHR& capabilities,
@@ -42,10 +47,14 @@ private:
 
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
     VkFormat image_format_;
+    VkFormat depth_format_;
     VkExtent2D extent_;
 
     std::vector<VkImage> images_;
     std::vector<VkImageView> image_views_;
+    VkImage depth_image_ = VK_NULL_HANDLE;
+    VkDeviceMemory depth_image_memory_ = VK_NULL_HANDLE;
+    VkImageView depth_image_view_ = VK_NULL_HANDLE;
     VkRenderPass render_pass_ = VK_NULL_HANDLE;
     std::vector<VkFramebuffer> framebuffers_;
 };

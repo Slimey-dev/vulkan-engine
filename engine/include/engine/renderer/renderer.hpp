@@ -3,6 +3,7 @@
 #include <engine/core/window.hpp>
 #include <engine/renderer/vk_device.hpp>
 #include <engine/renderer/vk_instance.hpp>
+#include <engine/renderer/vk_descriptors.hpp>
 #include <engine/renderer/vk_pipeline.hpp>
 #include <engine/renderer/vk_swapchain.hpp>
 
@@ -26,8 +27,11 @@ public:
 private:
     void createSurface();
     void createCommandPool();
+    void createVertexBuffer();
+    void createIndexBuffer();
     void createCommandBuffers();
     void createSyncObjects();
+    void updateUBO();
     void recordCommandBuffer(VkCommandBuffer cmd, uint32_t image_index);
     void recreateSwapchain();
 
@@ -37,9 +41,15 @@ private:
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
     std::unique_ptr<VulkanDevice> device_;
     std::unique_ptr<VulkanSwapchain> swapchain_;
+    std::unique_ptr<VulkanDescriptors> descriptors_;
     std::unique_ptr<VulkanPipeline> pipeline_;
 
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
+    VkBuffer vertex_buffer_ = VK_NULL_HANDLE;
+    VkDeviceMemory vertex_buffer_memory_ = VK_NULL_HANDLE;
+    VkBuffer index_buffer_ = VK_NULL_HANDLE;
+    VkDeviceMemory index_buffer_memory_ = VK_NULL_HANDLE;
+    uint32_t index_count_ = 0;
     std::vector<VkCommandBuffer> command_buffers_;
 
     std::vector<VkSemaphore> image_available_semaphores_;
