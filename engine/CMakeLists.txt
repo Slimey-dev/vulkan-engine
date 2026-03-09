@@ -1,4 +1,5 @@
 add_library(VulkanEngine STATIC
+    src/core/audio.cpp
     src/core/camera.cpp
     src/core/window.cpp
     src/renderer/vk_instance.cpp
@@ -25,12 +26,14 @@ target_include_directories(VulkanEngine
             ${CMAKE_SOURCE_DIR}/third_party/stb
             ${CMAKE_SOURCE_DIR}/third_party/tinyobj
             ${CMAKE_SOURCE_DIR}/third_party/imgui
+            ${CMAKE_SOURCE_DIR}/third_party/miniaudio
 )
 
 target_link_libraries(VulkanEngine
     PUBLIC  Vulkan::Vulkan
             glfw
             glm::glm-header-only
+    PRIVATE dl pthread m
 )
 
 target_compile_definitions(VulkanEngine

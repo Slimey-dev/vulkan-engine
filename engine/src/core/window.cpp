@@ -5,8 +5,7 @@
 
 namespace engine {
 
-Window::Window(uint32_t width, uint32_t height, const std::string& title)
-    : width_(width), height_(height) {
+Window::Window(const std::string& title) {
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);

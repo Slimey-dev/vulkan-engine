@@ -13,6 +13,8 @@ layout(binding = 0) uniform UniformBufferObject {
     vec4 lightPos;
     vec4 viewPos;
     vec4 lightColor;
+    vec4 fogColor;
+    vec4 fogParams;  // x = density
 } ubo;
 
 layout(binding = 1) uniform sampler2D texSampler;
@@ -69,5 +71,11 @@ void main() {
     vec3 specular = specularStrength * spec * ubo.lightColor.xyz;
 
     vec3 result = (ambient + (1.0 - shadow) * (diffuse + specular)) * texColor;
+
+    // Distance fog
+    float dist = length(fragWorldPos - ubo.viewPos.xyz);
+    float fogFactor = exp(-ubo.fogParams.x * dist);
+    result = mix(ubo.fogColor.rgb, result, fogFactor);
+
     outColor = vec4(result, 1.0);
 }

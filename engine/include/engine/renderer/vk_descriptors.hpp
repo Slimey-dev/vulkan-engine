@@ -17,6 +17,8 @@ struct UniformBufferObject {
     glm::vec4 light_pos;
     glm::vec4 view_pos;
     glm::vec4 light_color;
+    glm::vec4 fog_color;
+    glm::vec4 fog_params;  // x = density
 };
 
 struct PushConstants {

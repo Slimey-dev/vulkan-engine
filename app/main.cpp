@@ -7,7 +7,7 @@
 
 int main() {
     try {
-        engine::Window window(1280, 720, "Vulkan Engine");
+        engine::Window window("Vulkan Engine");
         engine::Renderer renderer(window);
 
         while (!window.shouldClose()) {

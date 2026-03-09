@@ -1,5 +1,6 @@
 #pragma once
 
+#include <engine/core/audio.hpp>
 #include <engine/core/camera.hpp>
 #include <engine/core/window.hpp>
 #include <engine/renderer/vk_device.hpp>
@@ -68,11 +69,14 @@ private:
     std::vector<VkFence> in_flight_fences_;
     uint32_t current_frame_ = 0;
 
+    Audio audio_;
     Camera camera_;
     float last_frame_time_ = 0.0f;
     glm::mat4 cube_model_{1.0f};
     glm::vec3 light_pos_{5.0f, 5.0f, 5.0f};
     glm::vec3 light_color_{1.0f, 1.0f, 1.0f};
+    glm::vec3 fog_color_{0.02f, 0.02f, 0.03f};
+    float fog_density_ = 0.15f;
 
     // Shadow map
     static constexpr uint32_t SHADOW_MAP_SIZE = 2048;

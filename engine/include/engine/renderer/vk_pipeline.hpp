@@ -25,14 +25,7 @@ public:
                    const std::vector<VkVertexInputBindingDescription>& bindings,
                    const std::vector<VkVertexInputAttributeDescription>& attributes,
                    VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE,
-                   bool depth_only = false);
-
-    VulkanPipeline(VkDevice device, VkRenderPass render_pass,
-                   const std::string& vert_path, const std::string& frag_path,
-                   const std::vector<VkVertexInputBindingDescription>& bindings,
-                   const std::vector<VkVertexInputAttributeDescription>& attributes,
-                   VkDescriptorSetLayout descriptor_set_layout,
-                   const PipelineConfig& config);
+                   const PipelineConfig& config = {});
     ~VulkanPipeline();
 
     VulkanPipeline(const VulkanPipeline&) = delete;

@@ -38,6 +38,7 @@ void Camera::processKeyboard(Window& window, float delta_time) {
     if (window.isKeyPressed(GLFW_KEY_SPACE) && grounded_) {
         vertical_velocity_ = kJumpImpulse;
         grounded_ = false;
+        just_jumped_ = true;
     }
 
     vertical_velocity_ -= kGravity * delta_time;
@@ -45,6 +46,9 @@ void Camera::processKeyboard(Window& window, float delta_time) {
 
     if (position_.z <= kMinZ) {
         position_.z = kMinZ;
+        if (!grounded_) {
+            just_landed_ = true;
+        }
         vertical_velocity_ = 0.0f;
         grounded_ = true;
     }

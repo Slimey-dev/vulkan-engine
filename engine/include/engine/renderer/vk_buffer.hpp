@@ -66,18 +66,12 @@ void endSingleTimeCommands(VkDevice device, VkCommandPool pool, VkQueue queue,
                            VkCommandBuffer cmd);
 
 void transitionImageLayout(VkDevice device, VkCommandPool pool, VkQueue queue, VkImage image,
-                           VkImageLayout old_layout, VkImageLayout new_layout);
-
-void copyBufferToImage(VkDevice device, VkCommandPool pool, VkQueue queue, VkBuffer buffer,
-                       VkImage image, uint32_t width, uint32_t height);
-
-void transitionImageLayout(VkDevice device, VkCommandPool pool, VkQueue queue, VkImage image,
                            VkImageLayout old_layout, VkImageLayout new_layout,
-                           uint32_t layer_count);
+                           uint32_t layer_count = 1);
 
 void copyBufferToImage(VkDevice device, VkCommandPool pool, VkQueue queue, VkBuffer buffer,
                        VkImage image, uint32_t width, uint32_t height,
-                       uint32_t layer_count, VkDeviceSize layer_size);
+                       uint32_t layer_count = 1, VkDeviceSize layer_size = 0);
 
 }  // namespace vk_buffer
 

@@ -9,7 +9,7 @@ namespace engine {
 
 class Window {
 public:
-    Window(uint32_t width, uint32_t height, const std::string& title);
+    Window(const std::string& title);
     ~Window();
 
     Window(const Window&) = delete;
@@ -39,8 +39,8 @@ private:
     static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
 
     GLFWwindow* window_ = nullptr;
-    uint32_t width_;
-    uint32_t height_;
+    uint32_t width_ = 0;
+    uint32_t height_ = 0;
     bool framebuffer_resized_ = false;
 
     double last_mouse_x_ = 0.0;

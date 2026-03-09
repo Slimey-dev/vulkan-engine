@@ -33,13 +33,19 @@ Renderer::Renderer(Window& window) : window_(window) {
     auto binding = Vertex::getBindingDescription();
     auto attributes = Vertex::getAttributeDescriptions();
 
+    PipelineConfig shadow_config{};
+    shadow_config.depth_bias = true;
+    shadow_config.depth_bias_constant = 1.25f;
+    shadow_config.depth_bias_slope = 1.75f;
+    shadow_config.has_color_attachment = false;
+
     shadow_pipeline_ = std::make_unique<VulkanPipeline>(
         device_->getHandle(), shadow_render_pass_,
         std::string(SHADER_DIR) + "shadow.vert.spv",
         std::string(SHADER_DIR) + "shadow.frag.spv",
         std::vector{binding},
         std::vector<VkVertexInputAttributeDescription>(attributes.begin(), attributes.end()),
-        descriptors_->getLayout(), true);
+        descriptors_->getLayout(), shadow_config);
 
     pipeline_ = std::make_unique<VulkanPipeline>(
         device_->getHandle(), pixel_render_pass_,
@@ -248,6 +254,9 @@ void Renderer::updateUBO() {
         window_.getScrollDelta();
     }
 
+    if (camera_.didJump()) audio_.playJump();
+    if (camera_.didLand()) audio_.playLand();
+
     // ImGui debug panel
     {
         ImGui::Begin("Engine Debug");
@@ -258,6 +267,11 @@ void Renderer::updateUBO() {
 
         ImGui::DragFloat3("Light Position", &light_pos_.x, 0.1f, -20.0f, 20.0f);
         ImGui::ColorEdit3("Light Color", &light_color_.x);
+
+        ImGui::Separator();
+        ImGui::Text("Fog");
+        ImGui::SliderFloat("Fog Density", &fog_density_, 0.0f, 1.0f, "%.3f");
+        ImGui::ColorEdit3("Fog Color", &fog_color_.x);
 
         ImGui::Separator();
         ImGui::Text("Press [Tab] to toggle UI/FPS mode");
@@ -282,6 +296,8 @@ void Renderer::updateUBO() {
     ubo.light_pos = glm::vec4(light_pos_, 0.0f);
     ubo.view_pos = glm::vec4(camera_.getPosition(), 0.0f);
     ubo.light_color = glm::vec4(light_color_, 0.0f);
+    ubo.fog_color = glm::vec4(fog_color_, 1.0f);
+    ubo.fog_params = glm::vec4(fog_density_, 0.0f, 0.0f, 0.0f);
 
     descriptors_->updateUniformBuffer(current_frame_, ubo);
 }
@@ -920,10 +936,10 @@ void Renderer::loadMesh() {
     // Ground plane at Z = -0.5 (base of the cube)
     // Use tex coords 0,0 so it samples a single texel, vertex color controls the tint
     std::vector<Vertex> ground_verts = {
-        {{-10.0f, -10.0f, -0.5f}, {0.7f, 0.7f, 0.7f}, {0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-        {{ 10.0f, -10.0f, -0.5f}, {0.7f, 0.7f, 0.7f}, {0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-        {{ 10.0f,  10.0f, -0.5f}, {0.7f, 0.7f, 0.7f}, {0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-        {{-10.0f,  10.0f, -0.5f}, {0.7f, 0.7f, 0.7f}, {0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+        {{-100.0f, -100.0f, -0.5f}, {0.7f, 0.7f, 0.7f}, {0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+        {{ 100.0f, -100.0f, -0.5f}, {0.7f, 0.7f, 0.7f}, {0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+        {{ 100.0f,  100.0f, -0.5f}, {0.7f, 0.7f, 0.7f}, {0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+        {{-100.0f,  100.0f, -0.5f}, {0.7f, 0.7f, 0.7f}, {0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
     };
     std::vector<uint32_t> ground_indices = {0, 1, 2, 2, 3, 0};
     ground_mesh_ = std::make_unique<Mesh>(*device_, command_pool_, ground_verts, ground_indices);

@@ -19,6 +19,9 @@ public:
     void processMouse(float x_offset, float y_offset);
     void processScroll(float y_offset);
 
+    bool didJump() { bool v = just_jumped_; just_jumped_ = false; return v; }
+    bool didLand() { bool v = just_landed_; just_landed_ = false; return v; }
+
 private:
     void updateVectors();
 
@@ -35,6 +38,8 @@ private:
 
     float vertical_velocity_ = 0.0f;
     bool grounded_ = false;
+    bool just_jumped_ = false;
+    bool just_landed_ = false;
 
     static constexpr float kGravity = 20.0f;
     static constexpr float kJumpImpulse = 7.0f;
