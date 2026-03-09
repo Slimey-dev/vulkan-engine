@@ -19,6 +19,8 @@ Window::Window(uint32_t width, uint32_t height, const std::string& title)
 
     glfwSetWindowUserPointer(window_, this);
     glfwSetFramebufferSizeCallback(window_, framebufferResizeCallback);
+    glfwSetCursorPosCallback(window_, cursorPosCallback);
+    glfwSetScrollCallback(window_, scrollCallback);
 
     logInfo("Window created: {}x{}", width_, height_);
 }
@@ -36,15 +38,67 @@ void Window::pollEvents() {
     glfwPollEvents();
 }
 
+void Window::close() {
+    glfwSetWindowShouldClose(window_, GLFW_TRUE);
+}
+
 VkExtent2D Window::getExtent() const {
     int w, h;
     glfwGetFramebufferSize(window_, &w, &h);
     return {static_cast<uint32_t>(w), static_cast<uint32_t>(h)};
 }
 
+bool Window::isKeyPressed(int key) const {
+    return glfwGetKey(window_, key) == GLFW_PRESS;
+}
+
+void Window::getMouseDelta(float& dx, float& dy) {
+    dx = mouse_dx_;
+    dy = mouse_dy_;
+    mouse_dx_ = 0.0f;
+    mouse_dy_ = 0.0f;
+}
+
+float Window::getScrollDelta() {
+    float delta = scroll_dy_;
+    scroll_dy_ = 0.0f;
+    return delta;
+}
+
+void Window::setCursorCaptured(bool captured) {
+    cursor_captured_ = captured;
+    glfwSetInputMode(window_, GLFW_CURSOR,
+                     captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+    if (captured) {
+        first_mouse_ = true;
+    }
+}
+
 void Window::framebufferResizeCallback(GLFWwindow* window, int /*width*/, int /*height*/) {
     auto* self = static_cast<Window*>(glfwGetWindowUserPointer(window));
     self->framebuffer_resized_ = true;
+}
+
+void Window::cursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
+    auto* self = static_cast<Window*>(glfwGetWindowUserPointer(window));
+    if (!self->cursor_captured_) return;
+
+    if (self->first_mouse_) {
+        self->last_mouse_x_ = xpos;
+        self->last_mouse_y_ = ypos;
+        self->first_mouse_ = false;
+        return;
+    }
+
+    self->mouse_dx_ += static_cast<float>(self->last_mouse_x_ - xpos);
+    self->mouse_dy_ += static_cast<float>(self->last_mouse_y_ - ypos);
+    self->last_mouse_x_ = xpos;
+    self->last_mouse_y_ = ypos;
+}
+
+void Window::scrollCallback(GLFWwindow* window, double /*xoffset*/, double yoffset) {
+    auto* self = static_cast<Window*>(glfwGetWindowUserPointer(window));
+    self->scroll_dy_ += static_cast<float>(yoffset);
 }
 
 }  // namespace engine

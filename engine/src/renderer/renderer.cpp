@@ -17,7 +17,10 @@ Renderer::Renderer(Window& window) : window_(window) {
     createSurface();
     device_ = std::make_unique<VulkanDevice>(instance_->getHandle(), surface_);
     swapchain_ = std::make_unique<VulkanSwapchain>(*device_, surface_, window_.getExtent());
-    descriptors_ = std::make_unique<VulkanDescriptors>(*device_, MAX_FRAMES_IN_FLIGHT);
+    createCommandPool();
+    createTexture();
+    descriptors_ = std::make_unique<VulkanDescriptors>(
+        *device_, MAX_FRAMES_IN_FLIGHT, texture_->getImageView(), texture_->getSampler());
 
     auto binding = Vertex::getBindingDescription();
     auto attributes = Vertex::getAttributeDescriptions();
@@ -29,12 +32,11 @@ Renderer::Renderer(Window& window) : window_(window) {
         std::vector<VkVertexInputAttributeDescription>(attributes.begin(), attributes.end()),
         descriptors_->getLayout());
 
-    createCommandPool();
-    createVertexBuffer();
-    createIndexBuffer();
+    loadMesh();
     createCommandBuffers();
     createSyncObjects();
 
+    window_.setCursorCaptured(true);
     logInfo("Renderer initialized");
 }
 
@@ -49,15 +51,12 @@ Renderer::~Renderer() {
         vkDestroySemaphore(device_->getHandle(), sem, nullptr);
     }
 
-    vkDestroyBuffer(device_->getHandle(), index_buffer_, nullptr);
-    vkFreeMemory(device_->getHandle(), index_buffer_memory_, nullptr);
-    vkDestroyBuffer(device_->getHandle(), vertex_buffer_, nullptr);
-    vkFreeMemory(device_->getHandle(), vertex_buffer_memory_, nullptr);
-
+    mesh_.reset();
     vkDestroyCommandPool(device_->getHandle(), command_pool_, nullptr);
 
     pipeline_.reset();
     descriptors_.reset();
+    texture_.reset();
     swapchain_.reset();
     device_.reset();
 
@@ -151,118 +150,55 @@ void Renderer::createCommandPool() {
 
 void Renderer::updateUBO() {
     static auto start = std::chrono::high_resolution_clock::now();
-    float time =
+    float current_time =
         std::chrono::duration<float>(std::chrono::high_resolution_clock::now() - start).count();
+    float delta_time = current_time - last_frame_time_;
+    last_frame_time_ = current_time;
+
+    if (window_.isKeyPressed(GLFW_KEY_ESCAPE)) {
+        window_.close();
+    }
+
+    camera_.processKeyboard(window_, delta_time);
+    float mouse_dx, mouse_dy;
+    window_.getMouseDelta(mouse_dx, mouse_dy);
+    camera_.processMouse(mouse_dx, mouse_dy);
+    camera_.processScroll(window_.getScrollDelta());
 
     UniformBufferObject ubo{};
-    ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f),
+    ubo.model = glm::rotate(glm::mat4(1.0f), current_time * glm::radians(90.0f),
                              glm::vec3(0.0f, 0.0f, 1.0f));
-    ubo.view =
-        glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 
     auto extent = swapchain_->getExtent();
-    ubo.proj = glm::perspective(glm::radians(45.0f),
-                                static_cast<float>(extent.width) / static_cast<float>(extent.height),
-                                0.1f, 10.0f);
-    ubo.proj[1][1] *= -1;  // Flip Y for Vulkan coordinate system
+    float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+    ubo.view = camera_.getViewMatrix();
+    ubo.proj = camera_.getProjectionMatrix(aspect);
 
     descriptors_->updateUniformBuffer(current_frame_, ubo);
 }
 
-void Renderer::createVertexBuffer() {
-    // 24 vertices: 4 per face, 6 faces, each face a distinct color
-    const std::vector<Vertex> vertices = {
-        // Front face (z = +0.5) - red
-        {{-0.5f, -0.5f,  0.5f}, {0.9f, 0.2f, 0.2f}},
-        {{ 0.5f, -0.5f,  0.5f}, {0.9f, 0.2f, 0.2f}},
-        {{ 0.5f,  0.5f,  0.5f}, {0.9f, 0.2f, 0.2f}},
-        {{-0.5f,  0.5f,  0.5f}, {0.9f, 0.2f, 0.2f}},
-        // Back face (z = -0.5) - green
-        {{ 0.5f, -0.5f, -0.5f}, {0.2f, 0.8f, 0.2f}},
-        {{-0.5f, -0.5f, -0.5f}, {0.2f, 0.8f, 0.2f}},
-        {{-0.5f,  0.5f, -0.5f}, {0.2f, 0.8f, 0.2f}},
-        {{ 0.5f,  0.5f, -0.5f}, {0.2f, 0.8f, 0.2f}},
-        // Top face (y = +0.5) - blue
-        {{-0.5f,  0.5f,  0.5f}, {0.2f, 0.3f, 0.9f}},
-        {{ 0.5f,  0.5f,  0.5f}, {0.2f, 0.3f, 0.9f}},
-        {{ 0.5f,  0.5f, -0.5f}, {0.2f, 0.3f, 0.9f}},
-        {{-0.5f,  0.5f, -0.5f}, {0.2f, 0.3f, 0.9f}},
-        // Bottom face (y = -0.5) - yellow
-        {{-0.5f, -0.5f, -0.5f}, {0.9f, 0.9f, 0.2f}},
-        {{ 0.5f, -0.5f, -0.5f}, {0.9f, 0.9f, 0.2f}},
-        {{ 0.5f, -0.5f,  0.5f}, {0.9f, 0.9f, 0.2f}},
-        {{-0.5f, -0.5f,  0.5f}, {0.9f, 0.9f, 0.2f}},
-        // Right face (x = +0.5) - cyan
-        {{ 0.5f, -0.5f,  0.5f}, {0.2f, 0.9f, 0.9f}},
-        {{ 0.5f, -0.5f, -0.5f}, {0.2f, 0.9f, 0.9f}},
-        {{ 0.5f,  0.5f, -0.5f}, {0.2f, 0.9f, 0.9f}},
-        {{ 0.5f,  0.5f,  0.5f}, {0.2f, 0.9f, 0.9f}},
-        // Left face (x = -0.5) - magenta
-        {{-0.5f, -0.5f, -0.5f}, {0.9f, 0.2f, 0.9f}},
-        {{-0.5f, -0.5f,  0.5f}, {0.9f, 0.2f, 0.9f}},
-        {{-0.5f,  0.5f,  0.5f}, {0.9f, 0.2f, 0.9f}},
-        {{-0.5f,  0.5f, -0.5f}, {0.9f, 0.2f, 0.9f}},
-    };
+void Renderer::createTexture() {
+    constexpr uint32_t size = 256;
+    constexpr uint32_t cell = size / 8;
+    std::vector<uint8_t> pixels(size * size * 4);
 
-    VkDeviceSize size = sizeof(vertices[0]) * vertices.size();
+    for (uint32_t y = 0; y < size; y++) {
+        for (uint32_t x = 0; x < size; x++) {
+            bool white = ((x / cell) + (y / cell)) % 2 == 0;
+            uint32_t idx = (y * size + x) * 4;
+            pixels[idx + 0] = white ? 255 : 40;
+            pixels[idx + 1] = white ? 255 : 40;
+            pixels[idx + 2] = white ? 255 : 40;
+            pixels[idx + 3] = 255;
+        }
+    }
 
-    VkBuffer staging_buffer;
-    VkDeviceMemory staging_memory;
-    vk_buffer::createBuffer(*device_, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                            staging_buffer, staging_memory);
-
-    void* data;
-    vkMapMemory(device_->getHandle(), staging_memory, 0, size, 0, &data);
-    std::memcpy(data, vertices.data(), size);
-    vkUnmapMemory(device_->getHandle(), staging_memory);
-
-    vk_buffer::createBuffer(*device_, size,
-                            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertex_buffer_,
-                            vertex_buffer_memory_);
-
-    vk_buffer::copyBuffer(*device_, command_pool_, staging_buffer, vertex_buffer_, size);
-
-    vkDestroyBuffer(device_->getHandle(), staging_buffer, nullptr);
-    vkFreeMemory(device_->getHandle(), staging_memory, nullptr);
+    texture_ = std::make_unique<VulkanTexture>(*device_, command_pool_, pixels.data(), size, size);
+    logInfo("Checkerboard texture generated ({}x{})", size, size);
 }
 
-void Renderer::createIndexBuffer() {
-    const std::vector<uint16_t> indices = {
-        0,  1,  2,  2,  3,  0,   // front
-        4,  5,  6,  6,  7,  4,   // back
-        8,  9,  10, 10, 11, 8,   // top
-        12, 13, 14, 14, 15, 12,  // bottom
-        16, 17, 18, 18, 19, 16,  // right
-        20, 21, 22, 22, 23, 20,  // left
-    };
-    index_count_ = static_cast<uint32_t>(indices.size());
-
-    VkDeviceSize size = sizeof(indices[0]) * indices.size();
-
-    VkBuffer staging_buffer;
-    VkDeviceMemory staging_memory;
-    vk_buffer::createBuffer(*device_, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                            staging_buffer, staging_memory);
-
-    void* data;
-    vkMapMemory(device_->getHandle(), staging_memory, 0, size, 0, &data);
-    std::memcpy(data, indices.data(), size);
-    vkUnmapMemory(device_->getHandle(), staging_memory);
-
-    vk_buffer::createBuffer(*device_, size,
-                            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, index_buffer_,
-                            index_buffer_memory_);
-
-    vk_buffer::copyBuffer(*device_, command_pool_, staging_buffer, index_buffer_, size);
-
-    vkDestroyBuffer(device_->getHandle(), staging_buffer, nullptr);
-    vkFreeMemory(device_->getHandle(), staging_memory, nullptr);
+void Renderer::loadMesh() {
+    mesh_ = Mesh::loadFromOBJ(*device_, command_pool_, std::string(ASSETS_DIR) + "cube.obj");
 }
 
 void Renderer::createCommandBuffers() {
@@ -347,11 +283,8 @@ void Renderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t image_index) {
     scissor.extent = swapchain_->getExtent();
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    VkBuffer vertex_buffers[] = {vertex_buffer_};
-    VkDeviceSize offsets[] = {0};
-    vkCmdBindVertexBuffers(cmd, 0, 1, vertex_buffers, offsets);
-    vkCmdBindIndexBuffer(cmd, index_buffer_, 0, VK_INDEX_TYPE_UINT16);
-    vkCmdDrawIndexed(cmd, index_count_, 1, 0, 0, 0);
+    mesh_->bind(cmd);
+    mesh_->draw(cmd);
 
     vkCmdEndRenderPass(cmd);
 

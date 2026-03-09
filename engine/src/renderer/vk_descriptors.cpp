@@ -2,13 +2,15 @@
 #include <engine/renderer/vk_descriptors.hpp>
 #include <engine/renderer/vk_device.hpp>
 
+#include <array>
 #include <cstring>
 #include <stdexcept>
 
 namespace engine {
 
-VulkanDescriptors::VulkanDescriptors(VulkanDevice& device, uint32_t frames_in_flight)
-    : device_(device) {
+VulkanDescriptors::VulkanDescriptors(VulkanDevice& device, uint32_t frames_in_flight,
+                                     VkImageView texture_view, VkSampler texture_sampler)
+    : device_(device), texture_view_(texture_view), texture_sampler_(texture_sampler) {
     createLayout();
     createPool(frames_in_flight);
     createUniformBuffers(frames_in_flight);
@@ -31,16 +33,24 @@ void VulkanDescriptors::updateUniformBuffer(uint32_t frame_index,
 }
 
 void VulkanDescriptors::createLayout() {
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    VkDescriptorSetLayoutBinding ubo_binding{};
+    ubo_binding.binding = 0;
+    ubo_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    ubo_binding.descriptorCount = 1;
+    ubo_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+    VkDescriptorSetLayoutBinding sampler_binding{};
+    sampler_binding.binding = 1;
+    sampler_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    sampler_binding.descriptorCount = 1;
+    sampler_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 2> bindings = {ubo_binding, sampler_binding};
 
     VkDescriptorSetLayoutCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    info.bindingCount = 1;
-    info.pBindings = &binding;
+    info.bindingCount = static_cast<uint32_t>(bindings.size());
+    info.pBindings = bindings.data();
 
     if (vkCreateDescriptorSetLayout(device_.getHandle(), &info, nullptr, &layout_) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create descriptor set layout");
@@ -48,14 +58,16 @@ void VulkanDescriptors::createLayout() {
 }
 
 void VulkanDescriptors::createPool(uint32_t frames_in_flight) {
-    VkDescriptorPoolSize pool_size{};
-    pool_size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    pool_size.descriptorCount = frames_in_flight;
+    std::array<VkDescriptorPoolSize, 2> pool_sizes{};
+    pool_sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    pool_sizes[0].descriptorCount = frames_in_flight;
+    pool_sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    pool_sizes[1].descriptorCount = frames_in_flight;
 
     VkDescriptorPoolCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    info.poolSizeCount = 1;
-    info.pPoolSizes = &pool_size;
+    info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
+    info.pPoolSizes = pool_sizes.data();
     info.maxSets = frames_in_flight;
 
     if (vkCreateDescriptorPool(device_.getHandle(), &info, nullptr, &pool_) != VK_SUCCESS) {
@@ -101,16 +113,30 @@ void VulkanDescriptors::createSets(uint32_t frames_in_flight) {
         buffer_info.offset = 0;
         buffer_info.range = sizeof(UniformBufferObject);
 
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = sets_[i];
-        write.dstBinding = 0;
-        write.dstArrayElement = 0;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        write.descriptorCount = 1;
-        write.pBufferInfo = &buffer_info;
+        VkDescriptorImageInfo image_info{};
+        image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        image_info.imageView = texture_view_;
+        image_info.sampler = texture_sampler_;
 
-        vkUpdateDescriptorSets(device_.getHandle(), 1, &write, 0, nullptr);
+        std::array<VkWriteDescriptorSet, 2> writes{};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = sets_[i];
+        writes[0].dstBinding = 0;
+        writes[0].dstArrayElement = 0;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[0].descriptorCount = 1;
+        writes[0].pBufferInfo = &buffer_info;
+
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = sets_[i];
+        writes[1].dstBinding = 1;
+        writes[1].dstArrayElement = 0;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[1].descriptorCount = 1;
+        writes[1].pImageInfo = &image_info;
+
+        vkUpdateDescriptorSets(device_.getHandle(), static_cast<uint32_t>(writes.size()),
+                               writes.data(), 0, nullptr);
     }
 }
 

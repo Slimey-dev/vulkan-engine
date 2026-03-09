@@ -1,10 +1,13 @@
 add_library(VulkanEngine STATIC
+    src/core/camera.cpp
     src/core/window.cpp
     src/renderer/vk_instance.cpp
     src/renderer/vk_device.cpp
     src/renderer/vk_swapchain.cpp
     src/renderer/vk_pipeline.cpp
     src/renderer/vk_buffer.cpp
+    src/renderer/vk_texture.cpp
+    src/renderer/mesh.cpp
     src/renderer/vk_descriptors.cpp
     src/renderer/renderer.cpp
 )
@@ -12,6 +15,8 @@ add_library(VulkanEngine STATIC
 target_include_directories(VulkanEngine
     PUBLIC  include
     PRIVATE src
+            ${CMAKE_SOURCE_DIR}/third_party/stb
+            ${CMAKE_SOURCE_DIR}/third_party/tinyobj
 )
 
 target_link_libraries(VulkanEngine
@@ -25,4 +30,5 @@ target_compile_definitions(VulkanEngine
             GLM_FORCE_RADIANS
             GLM_FORCE_DEPTH_ZERO_TO_ONE
     PRIVATE SHADER_DIR="${CMAKE_BINARY_DIR}/shaders/"
+            ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets/"
 )

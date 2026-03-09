@@ -18,7 +18,8 @@ struct UniformBufferObject {
 
 class VulkanDescriptors {
 public:
-    VulkanDescriptors(VulkanDevice& device, uint32_t frames_in_flight);
+    VulkanDescriptors(VulkanDevice& device, uint32_t frames_in_flight,
+                      VkImageView texture_view, VkSampler texture_sampler);
     ~VulkanDescriptors();
 
     VulkanDescriptors(const VulkanDescriptors&) = delete;
@@ -43,6 +44,9 @@ private:
     std::vector<VkBuffer> uniform_buffers_;
     std::vector<VkDeviceMemory> uniform_buffers_memory_;
     std::vector<void*> uniform_buffers_mapped_;
+
+    VkImageView texture_view_ = VK_NULL_HANDLE;
+    VkSampler texture_sampler_ = VK_NULL_HANDLE;
 };
 
 }  // namespace engine
