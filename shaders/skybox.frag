@@ -20,11 +20,12 @@ layout(location = 0) out vec4 outColor;
 void main() {
     vec3 color = texture(skybox, fragTexDir).rgb;
 
-    // Exponential fog based on elevation — horizon is fully fogged, zenith partially clear
+    // Fog: 100% at horizon (matches ground plane fog at infinity), fading with elevation
     vec3 dir = normalize(fragTexDir);
     float elevation = abs(dir.z);
-    float fogFactor = 1.0 - exp(-ubo.fogParams.x * 40.0 * (1.0 - elevation));
-    color = mix(color, ubo.fogColor.rgb, fogFactor);
+    float fogBlend = 1.0 - smoothstep(0.0, 0.4, elevation);
+    fogBlend *= clamp(ubo.fogParams.x * 7.0, 0.0, 1.0);
+    color = mix(color, ubo.fogColor.rgb, fogBlend);
 
     outColor = vec4(color, 1.0);
 }

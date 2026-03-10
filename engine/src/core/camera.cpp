@@ -20,13 +20,21 @@ glm::mat4 Camera::getViewMatrix() const {
 }
 
 glm::mat4 Camera::getProjectionMatrix(float aspect) const {
-    auto proj = glm::perspective(glm::radians(fov_), aspect, 0.1f, 100.0f);
+    float effective_fov = std::clamp(fov_ + sprint_fov_offset_, 1.0f, 120.0f);
+    auto proj = glm::perspective(glm::radians(effective_fov), aspect, 0.1f, 100.0f);
     proj[1][1] *= -1;
     return proj;
 }
 
 void Camera::processKeyboard(Window& window, float delta_time) {
+    bool moving = window.isKeyPressed(GLFW_KEY_W) || window.isKeyPressed(GLFW_KEY_S) ||
+                  window.isKeyPressed(GLFW_KEY_A) || window.isKeyPressed(GLFW_KEY_D);
+    if (grounded_) {
+        sprinting_ = moving && window.isKeyPressed(GLFW_KEY_LEFT_SHIFT);
+    }
+
     float velocity = speed_ * delta_time;
+    if (sprinting_) velocity *= kSprintSpeedMultiplier;
 
     glm::vec3 forward = glm::normalize(glm::vec3(front_.x, front_.y, 0.0f));
     glm::vec3 strafe = glm::normalize(glm::cross(forward, kWorldUp));
@@ -35,6 +43,10 @@ void Camera::processKeyboard(Window& window, float delta_time) {
     if (window.isKeyPressed(GLFW_KEY_S)) position_ -= forward * velocity;
     if (window.isKeyPressed(GLFW_KEY_A)) position_ -= strafe * velocity;
     if (window.isKeyPressed(GLFW_KEY_D)) position_ += strafe * velocity;
+
+    position_.x = std::clamp(position_.x, bounds_min_x_, bounds_max_x_);
+    position_.y = std::clamp(position_.y, bounds_min_y_, bounds_max_y_);
+
     if (window.isKeyPressed(GLFW_KEY_SPACE) && grounded_) {
         vertical_velocity_ = kJumpImpulse;
         grounded_ = false;
@@ -52,6 +64,18 @@ void Camera::processKeyboard(Window& window, float delta_time) {
         vertical_velocity_ = 0.0f;
         grounded_ = true;
     }
+
+    if (position_.z > bounds_max_z_) {
+        position_.z = bounds_max_z_;
+        vertical_velocity_ = 0.0f;
+    }
+
+    if (sprinting_ || sprint_fov_offset_ != 0.0f) {
+        float target_offset = sprinting_ ? kSprintFovBonus : 0.0f;
+        float t = 1.0f - std::exp(-kSprintFovLerpSpeed * delta_time);
+        sprint_fov_offset_ += (target_offset - sprint_fov_offset_) * t;
+        if (std::abs(sprint_fov_offset_) < 0.01f && !sprinting_) sprint_fov_offset_ = 0.0f;
+    }
 }
 
 void Camera::processMouse(float x_offset, float y_offset) {
@@ -63,6 +87,25 @@ void Camera::processMouse(float x_offset, float y_offset) {
 
 void Camera::processScroll(float y_offset) {
     fov_ = std::clamp(fov_ - y_offset, 1.0f, 120.0f);
+}
+
+void Camera::reset(glm::vec3 pos, float yaw, float pitch) {
+    position_ = pos;
+    yaw_ = yaw;
+    pitch_ = pitch;
+    vertical_velocity_ = 0.0f;
+    grounded_ = false;
+    sprinting_ = false;
+    sprint_fov_offset_ = 0.0f;
+    updateVectors();
+}
+
+void Camera::setBounds(float min_x, float max_x, float min_y, float max_y, float max_z) {
+    bounds_min_x_ = min_x;
+    bounds_max_x_ = max_x;
+    bounds_min_y_ = min_y;
+    bounds_max_y_ = max_y;
+    bounds_max_z_ = max_z;
 }
 
 void Camera::updateVectors() {

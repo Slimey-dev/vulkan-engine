@@ -7,4 +7,6 @@ compile_shaders(
         "${CMAKE_CURRENT_SOURCE_DIR}/shadow.frag"
         "${CMAKE_CURRENT_SOURCE_DIR}/skybox.vert"
         "${CMAKE_CURRENT_SOURCE_DIR}/skybox.frag"
+        "${CMAKE_CURRENT_SOURCE_DIR}/volumetric.vert"
+        "${CMAKE_CURRENT_SOURCE_DIR}/volumetric.frag"
 )

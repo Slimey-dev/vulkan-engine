@@ -14,7 +14,8 @@ layout(binding = 0) uniform UniformBufferObject {
     vec4 viewPos;
     vec4 lightColor;
     vec4 fogColor;
-    vec4 fogParams;  // x = density
+    vec4 fogParams;   // x = density
+    vec4 lightDir;    // xyz = spotlight dir, w = cos(outer cutoff); w==0 → point light
 } ubo;
 
 layout(binding = 1) uniform sampler2D texSampler;
@@ -33,6 +34,14 @@ float calcShadow(vec4 lightSpacePos) {
         return 0.0;
     }
 
+    // Fade shadow near the edges of the shadow map to avoid hard cutoff
+    float edgeFade = 1.0;
+    float fadeWidth = 0.15;
+    edgeFade *= smoothstep(0.0, fadeWidth, projCoords.x);
+    edgeFade *= smoothstep(0.0, fadeWidth, 1.0 - projCoords.x);
+    edgeFade *= smoothstep(0.0, fadeWidth, projCoords.y);
+    edgeFade *= smoothstep(0.0, fadeWidth, 1.0 - projCoords.y);
+
     // 3x3 PCF for soft shadow edges
     vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0));
     float shadow = 0.0;
@@ -43,7 +52,7 @@ float calcShadow(vec4 lightSpacePos) {
         }
     }
     shadow /= 9.0;
-    return 1.0 - shadow;
+    return (1.0 - shadow) * edgeFade;
 }
 
 void main() {
@@ -70,7 +79,16 @@ void main() {
     float spec = pow(max(dot(normal, halfDir), 0.0), 32.0);
     vec3 specular = specularStrength * spec * ubo.lightColor.xyz;
 
-    vec3 result = (ambient + (1.0 - shadow) * (diffuse + specular)) * texColor;
+    // Spotlight cone attenuation with soft outer edge
+    float spotAtten = 1.0;
+    if (ubo.lightDir.w > 0.0) {
+        float cosOuter = ubo.lightDir.w;
+        float theta = dot(normalize(fragWorldPos - ubo.lightPos.xyz), normalize(ubo.lightDir.xyz));
+        // Soft falloff: fade from cosOuter-0.15 to cosOuter
+        spotAtten = smoothstep(cosOuter - 0.15, cosOuter, theta);
+    }
+
+    vec3 result = (ambient + spotAtten * (1.0 - shadow) * (diffuse + specular)) * texColor;
 
     // Distance fog
     float dist = length(fragWorldPos - ubo.viewPos.xyz);

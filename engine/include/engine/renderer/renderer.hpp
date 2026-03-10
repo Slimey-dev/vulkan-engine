@@ -7,6 +7,7 @@
 #include <engine/renderer/vk_instance.hpp>
 #include <engine/renderer/vk_descriptors.hpp>
 #include <engine/renderer/mesh.hpp>
+#include <engine/renderer/scene.hpp>
 #include <engine/renderer/vk_pipeline.hpp>
 #include <engine/renderer/vk_swapchain.hpp>
 #include <engine/renderer/vk_texture.hpp>
@@ -41,7 +42,7 @@ private:
     void cleanupPixelResources();
     void initImGui();
     void shutdownImGui();
-    void loadMesh();
+    void loadScene(int index);
     void createCommandBuffers();
     void createSyncObjects();
     void updateUBO();
@@ -60,8 +61,8 @@ private:
     std::unique_ptr<VulkanPipeline> pipeline_;
 
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
-    std::unique_ptr<Mesh> mesh_;
-    std::unique_ptr<Mesh> ground_mesh_;
+    std::unique_ptr<Scene> scene_;
+    int current_scene_index_ = 0;
     std::vector<VkCommandBuffer> command_buffers_;
 
     std::vector<VkSemaphore> image_available_semaphores_;
@@ -72,11 +73,12 @@ private:
     Audio audio_;
     Camera camera_;
     float last_frame_time_ = 0.0f;
-    glm::mat4 cube_model_{1.0f};
     glm::vec3 light_pos_{5.0f, 5.0f, 5.0f};
     glm::vec3 light_color_{1.0f, 1.0f, 1.0f};
     glm::vec3 fog_color_{0.02f, 0.02f, 0.03f};
     float fog_density_ = 0.15f;
+    glm::vec3 light_dir_{0, 0, -1};
+    float light_cone_angle_ = 0.0f;
 
     // Shadow map
     static constexpr uint32_t SHADOW_MAP_SIZE = 2048;
@@ -87,6 +89,7 @@ private:
     VkRenderPass shadow_render_pass_ = VK_NULL_HANDLE;
     VkFramebuffer shadow_framebuffer_ = VK_NULL_HANDLE;
     std::unique_ptr<VulkanPipeline> shadow_pipeline_;
+    std::unique_ptr<VulkanPipeline> volumetric_pipeline_;
 
     // Skybox
     VkImage skybox_image_ = VK_NULL_HANDLE;

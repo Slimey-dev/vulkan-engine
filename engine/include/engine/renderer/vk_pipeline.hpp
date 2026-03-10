@@ -8,6 +8,7 @@
 namespace engine {
 
 struct PipelineConfig {
+    bool depth_test = true;
     bool depth_write = true;
     VkCompareOp depth_compare_op = VK_COMPARE_OP_LESS;
     VkCullModeFlags cull_mode = VK_CULL_MODE_BACK_BIT;
@@ -16,6 +17,7 @@ struct PipelineConfig {
     float depth_bias_constant = 0.0f;
     float depth_bias_slope = 0.0f;
     bool has_color_attachment = true;
+    bool additive_blend = false;
 };
 
 class VulkanPipeline {

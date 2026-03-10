@@ -1,4 +1,5 @@
 #include <engine/core/log.hpp>
+#include <engine/ecs/components.hpp>
 #include <engine/renderer/renderer.hpp>
 #include <engine/renderer/vk_buffer.hpp>
 
@@ -55,6 +56,18 @@ Renderer::Renderer(Window& window) : window_(window) {
         std::vector<VkVertexInputAttributeDescription>(attributes.begin(), attributes.end()),
         descriptors_->getLayout());
 
+    PipelineConfig vol_config{};
+    vol_config.depth_write = false;
+    vol_config.cull_mode = VK_CULL_MODE_NONE;  // two-sided
+    vol_config.additive_blend = true;
+    volumetric_pipeline_ = std::make_unique<VulkanPipeline>(
+        device_->getHandle(), pixel_render_pass_,
+        std::string(SHADER_DIR) + "volumetric.vert.spv",
+        std::string(SHADER_DIR) + "volumetric.frag.spv",
+        std::vector{binding},
+        std::vector<VkVertexInputAttributeDescription>(attributes.begin(), attributes.end()),
+        descriptors_->getLayout(), vol_config);
+
     // Skybox pipeline (position-only vertex input)
     VkVertexInputBindingDescription skybox_binding{};
     skybox_binding.binding = 0;
@@ -80,7 +93,7 @@ Renderer::Renderer(Window& window) : window_(window) {
         std::vector{skybox_binding}, std::vector{skybox_attr},
         descriptors_->getSkyboxLayout(), skybox_config);
 
-    loadMesh();
+    loadScene(0);
     createSkyboxMesh();
     createCommandBuffers();
     createSyncObjects();
@@ -102,13 +115,13 @@ Renderer::~Renderer() {
         vkDestroySemaphore(device_->getHandle(), sem, nullptr);
     }
 
-    mesh_.reset();
-    ground_mesh_.reset();
+    scene_.reset();
     vkDestroyCommandPool(device_->getHandle(), command_pool_, nullptr);
 
     pipeline_.reset();
     shadow_pipeline_.reset();
     skybox_pipeline_.reset();
+    volumetric_pipeline_.reset();
     descriptors_.reset();
     texture_.reset();
 
@@ -257,9 +270,18 @@ void Renderer::updateUBO() {
     if (camera_.didJump()) audio_.playJump();
     if (camera_.didLand()) audio_.playLand();
 
+    // Scene switching
+    if (window_.isKeyPressed(GLFW_KEY_1) && current_scene_index_ != 0) loadScene(0);
+    if (window_.isKeyPressed(GLFW_KEY_2) && current_scene_index_ != 1) loadScene(1);
+
+    // Update Rotator system
+    scene_->registry.each<Transform, Rotator>(
+        [&](Entity, Transform& t, Rotator& r) { t.rotation += r.axis * r.speed * delta_time; });
+
     // ImGui debug panel
     {
         ImGui::Begin("Engine Debug");
+        ImGui::Text("Scene: %s [1/2]", scene_->name());
         ImGui::Text("FPS: %.1f (%.3f ms)", 1.0f / delta_time, delta_time * 1000.0f);
 
         glm::vec3 cam_pos = camera_.getPosition();
@@ -278,15 +300,13 @@ void Renderer::updateUBO() {
         ImGui::End();
     }
 
-    cube_model_ = glm::rotate(glm::mat4(1.0f), current_time * glm::radians(90.0f),
-                               glm::vec3(0.0f, 0.0f, 1.0f));
-
     auto extent = swapchain_->getExtent();
     float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
 
+    float osz = scene_->shadow_ortho_size;
     glm::mat4 light_view =
-        glm::lookAt(light_pos_, glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-    glm::mat4 light_proj = glm::ortho(-12.0f, 12.0f, -12.0f, 12.0f, 0.1f, 20.0f);
+        glm::lookAt(light_pos_, glm::vec3(0.0f), scene_->shadow_up);
+    glm::mat4 light_proj = glm::ortho(-osz, osz, -osz, osz, 0.1f, scene_->shadow_far);
     light_proj[1][1] *= -1;  // Vulkan Y-flip
 
     UniformBufferObject ubo{};
@@ -298,6 +318,10 @@ void Renderer::updateUBO() {
     ubo.light_color = glm::vec4(light_color_, 0.0f);
     ubo.fog_color = glm::vec4(fog_color_, 1.0f);
     ubo.fog_params = glm::vec4(fog_density_, 0.0f, 0.0f, 0.0f);
+    float cos_outer = light_cone_angle_ > 0.0f
+                          ? std::cos(glm::radians(light_cone_angle_))
+                          : 0.0f;
+    ubo.light_dir = glm::vec4(glm::normalize(light_dir_), cos_outer);
 
     descriptors_->updateUniformBuffer(current_frame_, ubo);
 }
@@ -930,19 +954,31 @@ void Renderer::createSkyboxMesh() {
     logInfo("Skybox mesh created");
 }
 
-void Renderer::loadMesh() {
-    mesh_ = Mesh::loadFromOBJ(*device_, command_pool_, std::string(ASSETS_DIR) + "cube.obj");
+void Renderer::loadScene(int index) {
+    if (scene_) {
+        vkDeviceWaitIdle(device_->getHandle());
+        scene_.reset();
+    }
 
-    // Ground plane at Z = -0.5 (base of the cube)
-    // Use tex coords 0,0 so it samples a single texel, vertex color controls the tint
-    std::vector<Vertex> ground_verts = {
-        {{-100.0f, -100.0f, -0.5f}, {0.7f, 0.7f, 0.7f}, {0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-        {{ 100.0f, -100.0f, -0.5f}, {0.7f, 0.7f, 0.7f}, {0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-        {{ 100.0f,  100.0f, -0.5f}, {0.7f, 0.7f, 0.7f}, {0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-        {{-100.0f,  100.0f, -0.5f}, {0.7f, 0.7f, 0.7f}, {0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-    };
-    std::vector<uint32_t> ground_indices = {0, 1, 2, 2, 3, 0};
-    ground_mesh_ = std::make_unique<Mesh>(*device_, command_pool_, ground_verts, ground_indices);
+    if (index == 1) {
+        scene_ = std::make_unique<IndoorScene>();
+    } else {
+        scene_ = std::make_unique<OutdoorScene>();
+    }
+    scene_->init(*device_, command_pool_);
+    current_scene_index_ = index;
+
+    camera_.reset(scene_->camera_start, scene_->camera_yaw, scene_->camera_pitch);
+    camera_.setBounds(scene_->bounds.min_x, scene_->bounds.max_x,
+                      scene_->bounds.min_y, scene_->bounds.max_y,
+                      scene_->bounds.max_z);
+
+    light_pos_ = scene_->light_pos;
+    light_color_ = scene_->light_color;
+    fog_color_ = scene_->fog_color;
+    fog_density_ = scene_->fog_density;
+    light_dir_ = scene_->light_dir;
+    light_cone_angle_ = scene_->light_cone_angle;
 }
 
 void Renderer::createCommandBuffers() {
@@ -1019,20 +1055,16 @@ void Renderer::recordShadowPass(VkCommandBuffer cmd) {
     scissor.extent = {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    // Draw cube
-    PushConstants pc{};
-    pc.model = cube_model_;
-    vkCmdPushConstants(cmd, shadow_pipeline_->getLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
-                       sizeof(PushConstants), &pc);
-    mesh_->bind(cmd);
-    mesh_->draw(cmd);
-
-    // Draw ground
-    pc.model = glm::mat4(1.0f);
-    vkCmdPushConstants(cmd, shadow_pipeline_->getLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
-                       sizeof(PushConstants), &pc);
-    ground_mesh_->bind(cmd);
-    ground_mesh_->draw(cmd);
+    scene_->registry.each<Transform, MeshRenderer>(
+        [&](Entity e, Transform& t, MeshRenderer& mr) {
+            if (scene_->registry.has<VolumetricCone>(e)) return;
+            PushConstants pc{};
+            pc.model = t.matrix();
+            vkCmdPushConstants(cmd, shadow_pipeline_->getLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
+                               sizeof(PushConstants), &pc);
+            mr.mesh->bind(cmd);
+            mr.mesh->draw(cmd);
+        });
 
     vkCmdEndRenderPass(cmd);
 }
@@ -1057,7 +1089,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t image_index) {
     rp_info.renderArea.extent = {pixel_width_, pixel_height_};
 
     std::array<VkClearValue, 2> clear_values{};
-    clear_values[0].color = {{0.01f, 0.01f, 0.02f, 1.0f}};
+    clear_values[0].color = {{fog_color_.x, fog_color_.y, fog_color_.z, 1.0f}};
     clear_values[1].depthStencil = {1.0f, 0};
     rp_info.clearValueCount = static_cast<uint32_t>(clear_values.size());
     rp_info.pClearValues = clear_values.data();
@@ -1076,36 +1108,50 @@ void Renderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t image_index) {
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
     // Skybox (drawn first; pos.xyww places it at max depth)
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skybox_pipeline_->getHandle());
-    VkDescriptorSet skybox_set = descriptors_->getSkyboxSet(current_frame_);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skybox_pipeline_->getLayout(),
-                            0, 1, &skybox_set, 0, nullptr);
-    VkBuffer skybox_buffers[] = {skybox_vertex_buffer_};
-    VkDeviceSize skybox_offsets[] = {0};
-    vkCmdBindVertexBuffers(cmd, 0, 1, skybox_buffers, skybox_offsets);
-    vkCmdBindIndexBuffer(cmd, skybox_index_buffer_, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cmd, skybox_index_count_, 1, 0, 0, 0);
+    if (scene_->skybox_enabled) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skybox_pipeline_->getHandle());
+        VkDescriptorSet skybox_set = descriptors_->getSkyboxSet(current_frame_);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skybox_pipeline_->getLayout(),
+                                0, 1, &skybox_set, 0, nullptr);
+        VkBuffer skybox_buffers[] = {skybox_vertex_buffer_};
+        VkDeviceSize skybox_offsets[] = {0};
+        vkCmdBindVertexBuffers(cmd, 0, 1, skybox_buffers, skybox_offsets);
+        vkCmdBindIndexBuffer(cmd, skybox_index_buffer_, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, skybox_index_count_, 1, 0, 0, 0);
+    }
 
-    // Scene
+    // Scene entities
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->getHandle());
     VkDescriptorSet desc_set = descriptors_->getSet(current_frame_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->getLayout(), 0, 1,
                             &desc_set, 0, nullptr);
 
-    // Draw cube
-    PushConstants pc{};
-    pc.model = cube_model_;
-    vkCmdPushConstants(cmd, pipeline_->getLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
-                       sizeof(PushConstants), &pc);
-    mesh_->bind(cmd);
-    mesh_->draw(cmd);
+    scene_->registry.each<Transform, MeshRenderer>(
+        [&](Entity e, Transform& t, MeshRenderer& mr) {
+            if (scene_->registry.has<VolumetricCone>(e)) return;
+            PushConstants pc{};
+            pc.model = t.matrix();
+            vkCmdPushConstants(cmd, pipeline_->getLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
+                               sizeof(PushConstants), &pc);
+            mr.mesh->bind(cmd);
+            mr.mesh->draw(cmd);
+        });
 
-    // Draw ground
-    pc.model = glm::mat4(1.0f);
-    vkCmdPushConstants(cmd, pipeline_->getLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
-                       sizeof(PushConstants), &pc);
-    ground_mesh_->bind(cmd);
-    ground_mesh_->draw(cmd);
+    // Volumetric light cone (additive blend, no depth write)
+    scene_->registry.each<Transform, MeshRenderer, VolumetricCone>(
+        [&](Entity, Transform& t, MeshRenderer& mr, VolumetricCone&) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              volumetric_pipeline_->getHandle());
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    volumetric_pipeline_->getLayout(), 0, 1, &desc_set, 0,
+                                    nullptr);
+            PushConstants pc{};
+            pc.model = t.matrix();
+            vkCmdPushConstants(cmd, volumetric_pipeline_->getLayout(), VK_SHADER_STAGE_VERTEX_BIT,
+                               0, sizeof(PushConstants), &pc);
+            mr.mesh->bind(cmd);
+            mr.mesh->draw(cmd);
+        });
 
     vkCmdEndRenderPass(cmd);
 

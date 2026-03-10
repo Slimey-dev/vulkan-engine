@@ -11,6 +11,7 @@ add_library(VulkanEngine STATIC
     src/renderer/mesh.cpp
     src/renderer/vk_descriptors.cpp
     src/renderer/renderer.cpp
+    src/renderer/scene.cpp
     ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui.cpp
     ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_draw.cpp
     ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui_tables.cpp
