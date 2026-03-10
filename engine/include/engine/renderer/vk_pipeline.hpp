@@ -18,6 +18,8 @@ struct PipelineConfig {
     float depth_bias_slope = 0.0f;
     bool has_color_attachment = true;
     bool additive_blend = false;
+    uint32_t push_constant_size = 64;  // sizeof(mat4)
+    VkShaderStageFlags push_constant_stages = VK_SHADER_STAGE_VERTEX_BIT;
 };
 
 class VulkanPipeline {

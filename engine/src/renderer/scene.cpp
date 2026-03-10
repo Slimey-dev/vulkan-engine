@@ -55,6 +55,8 @@ IndoorScene::IndoorScene() {
     shadow_ortho_size = 6.0f;
     shadow_far = 15.0f;
     shadow_up = {0, 1, 0};
+    bloom_threshold = 1.0f;
+    bloom_intensity = 1.0f;
 }
 
 static void createRoomMesh(VulkanDevice& device, VkCommandPool pool,
@@ -141,6 +143,37 @@ static void createBoxMesh(VulkanDevice& device, VkCommandPool pool,
     meshes.push_back(std::make_unique<Mesh>(device, pool, verts, indices));
 }
 
+static void createSphereMesh(VulkanDevice& device, VkCommandPool pool,
+                             std::vector<std::unique_ptr<Mesh>>& meshes, float radius,
+                             glm::vec3 center, glm::vec3 color, glm::vec2 uv, int stacks,
+                             int slices) {
+    std::vector<Vertex> verts;
+    std::vector<uint32_t> indices;
+
+    for (int i = 0; i <= stacks; i++) {
+        float phi = glm::pi<float>() * static_cast<float>(i) / static_cast<float>(stacks);
+        float z = std::cos(phi);
+        float r = std::sin(phi);
+
+        for (int j = 0; j <= slices; j++) {
+            float theta = 2.0f * glm::pi<float>() * static_cast<float>(j) / static_cast<float>(slices);
+            glm::vec3 normal{r * std::cos(theta), r * std::sin(theta), z};
+            glm::vec3 pos = center + normal * radius;
+            verts.push_back({pos, color, uv, normal});
+        }
+    }
+
+    for (int i = 0; i < stacks; i++) {
+        for (int j = 0; j < slices; j++) {
+            uint32_t a = static_cast<uint32_t>(i * (slices + 1) + j);
+            uint32_t b = a + static_cast<uint32_t>(slices + 1);
+            indices.insert(indices.end(), {a, b, a + 1, a + 1, b, b + 1});
+        }
+    }
+
+    meshes.push_back(std::make_unique<Mesh>(device, pool, verts, indices));
+}
+
 void IndoorScene::init(VulkanDevice& device, VkCommandPool pool) {
     // [0] Cube
     meshes.push_back(
@@ -157,6 +190,10 @@ void IndoorScene::init(VulkanDevice& device, VkCommandPool pool) {
     // [3] Lamp cord
     createBoxMesh(device, pool, meshes,
                   {0.01f, 0.01f, 0.6f}, {0, 0, 6.9f}, lamp_color, {0.5f, 0.5f});
+
+    // [4] Light bulb
+    glm::vec3 bulb_color{8.0f, 7.0f, 5.0f};
+    createSphereMesh(device, pool, meshes, 0.12f, {0, 0, 5.9f}, bulb_color, {0.5f, 0.5f}, 8, 12);
 
     // Cube entity
     Entity cube = registry.create();
@@ -179,13 +216,19 @@ void IndoorScene::init(VulkanDevice& device, VkCommandPool pool) {
     registry.emplace<Transform>(cord);
     registry.emplace<MeshRenderer>(cord).mesh = meshes[3].get();
 
+    // Light bulb entity
+    Entity bulb = registry.create();
+    registry.emplace<Transform>(bulb);
+    registry.emplace<MeshRenderer>(bulb).mesh = meshes[4].get();
+    registry.emplace<Emissive>(bulb);
+
     // Point light entity
     Entity light_e = registry.create();
     auto& lt = registry.emplace<Transform>(light_e);
     lt.position = {0, 0, 6.0f};
     registry.emplace<PointLight>(light_e);
 
-    // [4] Volumetric cone mesh — truncated cone with outward normals + height gradient
+    // [5] Volumetric cone mesh — truncated cone with outward normals + height gradient
     // Rendered two-sided with Fresnel-fade shader: bright when viewed edge-on.
     // No overlapping geometry = no center line artifact.
     {
@@ -247,10 +290,10 @@ void IndoorScene::init(VulkanDevice& device, VkCommandPool pool) {
 
     Entity cone = registry.create();
     registry.emplace<Transform>(cone);
-    registry.emplace<MeshRenderer>(cone).mesh = meshes[4].get();
+    registry.emplace<MeshRenderer>(cone).mesh = meshes[5].get();
     registry.emplace<VolumetricCone>(cone);
 
-    logInfo("IndoorScene initialized ({} entities, {} meshes)", 7, meshes.size());
+    logInfo("IndoorScene initialized ({} entities, {} meshes)", 8, meshes.size());
 }
 
 }  // namespace engine

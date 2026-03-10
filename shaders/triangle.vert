@@ -16,6 +16,7 @@ layout(binding = 0) uniform UniformBufferObject {
 
 layout(push_constant) uniform PushConstants {
     mat4 model;
+    float emissive;
 } pc;
 
 layout(location = 0) out vec3 fragColor;

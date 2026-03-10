@@ -21,6 +21,11 @@ layout(binding = 0) uniform UniformBufferObject {
 layout(binding = 1) uniform sampler2D texSampler;
 layout(binding = 2) uniform sampler2DShadow shadowMap;
 
+layout(push_constant) uniform PushConstants {
+    mat4 model;
+    float emissive;
+} pc;
+
 layout(location = 0) out vec4 outColor;
 
 float calcShadow(vec4 lightSpacePos) {
@@ -57,6 +62,11 @@ float calcShadow(vec4 lightSpacePos) {
 
 void main() {
     vec3 texColor = texture(texSampler, fragTexCoord).rgb * fragColor;
+
+    if (pc.emissive > 0.0) {
+        outColor = vec4(texColor * pc.emissive, 1.0);
+        return;
+    }
 
     vec3 normal = normalize(fragNormal);
     vec3 lightDir = normalize(ubo.lightPos.xyz - fragWorldPos);

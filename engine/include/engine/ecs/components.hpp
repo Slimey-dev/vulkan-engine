@@ -36,5 +36,6 @@ struct PointLight {
 };
 
 struct VolumetricCone {};  // tag: rendered with additive blend pipeline
+struct Emissive {};        // tag: skip lighting, output vertex color directly
 
 }  // namespace engine

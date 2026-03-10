@@ -24,6 +24,7 @@ struct UniformBufferObject {
 
 struct PushConstants {
     glm::mat4 model;
+    float emissive = 0.0f;
 };
 
 class VulkanDescriptors {

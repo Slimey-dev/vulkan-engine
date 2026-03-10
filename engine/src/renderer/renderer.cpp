@@ -1,6 +1,9 @@
 #include <engine/core/log.hpp>
 #include <engine/ecs/components.hpp>
 #include <engine/renderer/passes/blit_pass.hpp>
+#include <engine/renderer/passes/bloom_blur_pass.hpp>
+#include <engine/renderer/passes/bloom_composite_pass.hpp>
+#include <engine/renderer/passes/bloom_extract_pass.hpp>
 #include <engine/renderer/passes/scene_pass.hpp>
 #include <engine/renderer/passes/shadow_pass.hpp>
 #include <engine/renderer/passes/ui_pass.hpp>
@@ -37,6 +40,7 @@ Renderer::Renderer(Window& window) : window_(window) {
     loadScene(0);
     createSkyboxMesh();
     buildRenderGraph();
+    createBloomDescriptors();
     createPipelines();
     createCommandBuffers();
     createSyncObjects();
@@ -65,6 +69,10 @@ Renderer::~Renderer() {
     shadow_pipeline_.reset();
     skybox_pipeline_.reset();
     volumetric_pipeline_.reset();
+    bloom_extract_pipeline_.reset();
+    bloom_blur_pipeline_.reset();
+    bloom_composite_pipeline_.reset();
+    cleanupBloomDescriptors();
     descriptors_.reset();
     texture_.reset();
 
@@ -235,6 +243,11 @@ void Renderer::updateUBO() {
         ImGui::ColorEdit3("Fog Color", &fog_color_.x);
 
         ImGui::Separator();
+        ImGui::Text("Bloom");
+        ImGui::SliderFloat("Bloom Threshold", &bloom_threshold_, 0.0f, 2.0f, "%.2f");
+        ImGui::SliderFloat("Bloom Intensity", &bloom_intensity_, 0.0f, 3.0f, "%.2f");
+
+        ImGui::Separator();
         ImGui::Text("Press [Tab] to toggle UI/FPS mode");
         ImGui::End();
     }
@@ -368,15 +381,28 @@ void Renderer::buildRenderGraph() {
     swapchain_id_ = builder.importSwapchain("swapchain", *swapchain_);
 
     float scale = 1.0f / static_cast<float>(PIXEL_SCALE);
+    VkFormat hdr_format = VK_FORMAT_R16G16B16A16_SFLOAT;
     pixel_color_id_ = builder.createImage("pixel_color",
                                           {.width_scale = scale,
                                            .height_scale = scale,
-                                           .extra_usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
+                                           .format = hdr_format});
     pixel_depth_id_ = builder.createImage("pixel_depth",
                                           {.width_scale = scale,
                                            .height_scale = scale,
                                            .format = depth_format,
                                            .aspect = VK_IMAGE_ASPECT_DEPTH_BIT});
+    bloom_extract_id_ = builder.createImage("bloom_extract",
+                                            {.width_scale = scale,
+                                             .height_scale = scale,
+                                             .format = hdr_format});
+    bloom_blur_h_id_ = builder.createImage("bloom_blur_h",
+                                           {.width_scale = scale,
+                                            .height_scale = scale,
+                                            .format = hdr_format});
+    bloom_blurred_id_ = builder.createImage("bloom_blurred",
+                                            {.width_scale = scale,
+                                             .height_scale = scale,
+                                             .format = hdr_format});
 
     auto* shadow = builder.addPass<ShadowPass>("shadow", shadow_pipeline_ptr_, descriptors_ptr_,
                                                scene_ptr_, current_frame_);
@@ -399,9 +425,33 @@ void Renderer::buildRenderGraph() {
     builder.passWrites(scene_pass, pixel_color_id_, ResourceUsage::ColorAttachmentWrite);
     builder.passWrites(scene_pass, pixel_depth_id_, ResourceUsage::DepthAttachmentWrite);
 
-    auto* blit = builder.addPass<BlitPass>("blit", pixel_color_id_, swapchain_id_);
-    builder.passReads(blit, pixel_color_id_, ResourceUsage::TransferSrc);
-    builder.passWrites(blit, swapchain_id_, ResourceUsage::TransferDst);
+    VkClearValue black{};
+    black.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+
+    auto* bloom_extract = builder.addPass<BloomExtractPass>(
+        "bloom_extract", bloom_extract_pipeline_ptr_, bloom_extract_set_, bloom_threshold_);
+    bloom_extract->clear_values = {black};
+    builder.passReads(bloom_extract, pixel_color_id_, ResourceUsage::ShaderReadOnly);
+    builder.passWrites(bloom_extract, bloom_extract_id_, ResourceUsage::ColorAttachmentWrite);
+
+    auto* bloom_blur_h = builder.addPass<BloomBlurPass>(
+        "bloom_blur_h", bloom_blur_pipeline_ptr_, bloom_blur_h_set_, bloom_blur_h_dir_);
+    bloom_blur_h->clear_values = {black};
+    builder.passReads(bloom_blur_h, bloom_extract_id_, ResourceUsage::ShaderReadOnly);
+    builder.passWrites(bloom_blur_h, bloom_blur_h_id_, ResourceUsage::ColorAttachmentWrite);
+
+    auto* bloom_blur_v = builder.addPass<BloomBlurPass>(
+        "bloom_blur_v", bloom_blur_pipeline_ptr_, bloom_blur_v_set_, bloom_blur_v_dir_);
+    bloom_blur_v->clear_values = {black};
+    builder.passReads(bloom_blur_v, bloom_blur_h_id_, ResourceUsage::ShaderReadOnly);
+    builder.passWrites(bloom_blur_v, bloom_blurred_id_, ResourceUsage::ColorAttachmentWrite);
+
+    auto* composite = builder.addPass<BloomCompositePass>(
+        "composite", bloom_composite_pipeline_ptr_, bloom_composite_set_, bloom_intensity_);
+    composite->clear_values = {black};
+    builder.passReads(composite, pixel_color_id_, ResourceUsage::ShaderReadOnly);
+    builder.passReads(composite, bloom_blurred_id_, ResourceUsage::ShaderReadOnly);
+    builder.passWrites(composite, swapchain_id_, ResourceUsage::ColorAttachmentWrite);
 
     auto* ui = builder.addPass<UIPass>("ui");
     builder.passWrites(ui, swapchain_id_, ResourceUsage::ColorAttachmentWrite);
@@ -414,11 +464,14 @@ void Renderer::createPipelines() {
     auto binding = Vertex::getBindingDescription();
     auto attributes = Vertex::getAttributeDescriptions();
 
+    uint32_t pc_size = sizeof(PushConstants);
+
     PipelineConfig shadow_config{};
     shadow_config.depth_bias = true;
     shadow_config.depth_bias_constant = 1.25f;
     shadow_config.depth_bias_slope = 1.75f;
     shadow_config.has_color_attachment = false;
+    shadow_config.push_constant_size = pc_size;
 
     shadow_pipeline_ = std::make_unique<VulkanPipeline>(
         device_->getHandle(), render_graph_->getRenderPass("shadow"),
@@ -428,18 +481,24 @@ void Renderer::createPipelines() {
         std::vector<VkVertexInputAttributeDescription>(attributes.begin(), attributes.end()),
         descriptors_->getLayout(), shadow_config);
 
+    PipelineConfig scene_config{};
+    scene_config.push_constant_size = pc_size;
+    scene_config.push_constant_stages =
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
     pipeline_ = std::make_unique<VulkanPipeline>(
         device_->getHandle(), render_graph_->getRenderPass("scene"),
         std::string(SHADER_DIR) + "triangle.vert.spv",
         std::string(SHADER_DIR) + "triangle.frag.spv",
         std::vector{binding},
         std::vector<VkVertexInputAttributeDescription>(attributes.begin(), attributes.end()),
-        descriptors_->getLayout());
+        descriptors_->getLayout(), scene_config);
 
     PipelineConfig vol_config{};
     vol_config.depth_write = false;
     vol_config.cull_mode = VK_CULL_MODE_NONE;
     vol_config.additive_blend = true;
+    vol_config.push_constant_size = pc_size;
     volumetric_pipeline_ = std::make_unique<VulkanPipeline>(
         device_->getHandle(), render_graph_->getRenderPass("scene"),
         std::string(SHADER_DIR) + "volumetric.vert.spv",
@@ -473,13 +532,214 @@ void Renderer::createPipelines() {
         std::vector{skybox_binding}, std::vector{skybox_attr},
         descriptors_->getSkyboxLayout(), skybox_config);
 
+    // Bloom extract pipeline
+    PipelineConfig bloom_extract_config{};
+    bloom_extract_config.depth_test = false;
+    bloom_extract_config.depth_write = false;
+    bloom_extract_config.cull_mode = VK_CULL_MODE_NONE;
+    bloom_extract_config.push_constant_size = sizeof(float);
+    bloom_extract_config.push_constant_stages = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bloom_extract_pipeline_ = std::make_unique<VulkanPipeline>(
+        device_->getHandle(), render_graph_->getRenderPass("bloom_extract"),
+        std::string(SHADER_DIR) + "fullscreen.vert.spv",
+        std::string(SHADER_DIR) + "bloom_extract.frag.spv",
+        std::vector<VkVertexInputBindingDescription>{},
+        std::vector<VkVertexInputAttributeDescription>{}, bloom_desc_layout_,
+        bloom_extract_config);
+
+    // Bloom blur pipeline (shared for H and V)
+    PipelineConfig bloom_blur_config{};
+    bloom_blur_config.depth_test = false;
+    bloom_blur_config.depth_write = false;
+    bloom_blur_config.cull_mode = VK_CULL_MODE_NONE;
+    bloom_blur_config.push_constant_size = sizeof(float) * 2;
+    bloom_blur_config.push_constant_stages = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bloom_blur_pipeline_ = std::make_unique<VulkanPipeline>(
+        device_->getHandle(), render_graph_->getRenderPass("bloom_blur_h"),
+        std::string(SHADER_DIR) + "fullscreen.vert.spv",
+        std::string(SHADER_DIR) + "bloom_blur.frag.spv",
+        std::vector<VkVertexInputBindingDescription>{},
+        std::vector<VkVertexInputAttributeDescription>{}, bloom_desc_layout_, bloom_blur_config);
+
+    // Bloom composite pipeline
+    PipelineConfig bloom_composite_config{};
+    bloom_composite_config.depth_test = false;
+    bloom_composite_config.depth_write = false;
+    bloom_composite_config.cull_mode = VK_CULL_MODE_NONE;
+    bloom_composite_config.push_constant_size = sizeof(float);
+    bloom_composite_config.push_constant_stages = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bloom_composite_pipeline_ = std::make_unique<VulkanPipeline>(
+        device_->getHandle(), render_graph_->getRenderPass("composite"),
+        std::string(SHADER_DIR) + "fullscreen.vert.spv",
+        std::string(SHADER_DIR) + "bloom_composite.frag.spv",
+        std::vector<VkVertexInputBindingDescription>{},
+        std::vector<VkVertexInputAttributeDescription>{}, bloom_composite_desc_layout_,
+        bloom_composite_config);
+
     // Update pointer aliases for pass bindings
     pipeline_ptr_ = pipeline_.get();
     shadow_pipeline_ptr_ = shadow_pipeline_.get();
     skybox_pipeline_ptr_ = skybox_pipeline_.get();
     volumetric_pipeline_ptr_ = volumetric_pipeline_.get();
+    bloom_extract_pipeline_ptr_ = bloom_extract_pipeline_.get();
+    bloom_blur_pipeline_ptr_ = bloom_blur_pipeline_.get();
+    bloom_composite_pipeline_ptr_ = bloom_composite_pipeline_.get();
     descriptors_ptr_ = descriptors_.get();
     scene_ptr_ = scene_.get();
+}
+
+void Renderer::createBloomDescriptors() {
+    VkDevice dev = device_->getHandle();
+
+    // Create descriptor set layouts
+    VkDescriptorSetLayoutBinding single_binding{};
+    single_binding.binding = 0;
+    single_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    single_binding.descriptorCount = 1;
+    single_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layout_info{};
+    layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layout_info.bindingCount = 1;
+    layout_info.pBindings = &single_binding;
+    if (vkCreateDescriptorSetLayout(dev, &layout_info, nullptr, &bloom_desc_layout_) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create bloom descriptor set layout");
+    }
+
+    VkDescriptorSetLayoutBinding composite_bindings[2]{};
+    composite_bindings[0].binding = 0;
+    composite_bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    composite_bindings[0].descriptorCount = 1;
+    composite_bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    composite_bindings[1].binding = 1;
+    composite_bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    composite_bindings[1].descriptorCount = 1;
+    composite_bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    layout_info.bindingCount = 2;
+    layout_info.pBindings = composite_bindings;
+    if (vkCreateDescriptorSetLayout(dev, &layout_info, nullptr, &bloom_composite_desc_layout_) !=
+        VK_SUCCESS) {
+        throw std::runtime_error("Failed to create bloom composite descriptor set layout");
+    }
+
+    // Create descriptor pool
+    VkDescriptorPoolSize pool_size{};
+    pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    pool_size.descriptorCount = 5;  // 3 single + 2 composite
+
+    VkDescriptorPoolCreateInfo pool_info{};
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.maxSets = 4;
+    pool_info.poolSizeCount = 1;
+    pool_info.pPoolSizes = &pool_size;
+    if (vkCreateDescriptorPool(dev, &pool_info, nullptr, &bloom_desc_pool_) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create bloom descriptor pool");
+    }
+
+    // Create samplers
+    VkSamplerCreateInfo sampler_info{};
+    sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sampler_info.magFilter = VK_FILTER_LINEAR;
+    sampler_info.minFilter = VK_FILTER_LINEAR;
+    sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    if (vkCreateSampler(dev, &sampler_info, nullptr, &bloom_sampler_) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create bloom sampler");
+    }
+
+    sampler_info.magFilter = VK_FILTER_NEAREST;
+    sampler_info.minFilter = VK_FILTER_NEAREST;
+    if (vkCreateSampler(dev, &sampler_info, nullptr, &bloom_nearest_sampler_) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create bloom nearest sampler");
+    }
+
+    // Allocate descriptor sets
+    VkDescriptorSetLayout single_layouts[3] = {bloom_desc_layout_, bloom_desc_layout_,
+                                               bloom_desc_layout_};
+    VkDescriptorSetAllocateInfo alloc_info{};
+    alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc_info.descriptorPool = bloom_desc_pool_;
+    alloc_info.descriptorSetCount = 3;
+    alloc_info.pSetLayouts = single_layouts;
+
+    VkDescriptorSet single_sets[3];
+    if (vkAllocateDescriptorSets(dev, &alloc_info, single_sets) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to allocate bloom descriptor sets");
+    }
+    bloom_extract_set_ = single_sets[0];
+    bloom_blur_h_set_ = single_sets[1];
+    bloom_blur_v_set_ = single_sets[2];
+
+    alloc_info.descriptorSetCount = 1;
+    alloc_info.pSetLayouts = &bloom_composite_desc_layout_;
+    if (vkAllocateDescriptorSets(dev, &alloc_info, &bloom_composite_set_) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to allocate bloom composite descriptor set");
+    }
+
+    // Write descriptor sets with image views from render graph
+    auto& pixel_color_res = render_graph_->getResource(pixel_color_id_);
+    auto& bloom_extract_res = render_graph_->getResource(bloom_extract_id_);
+    auto& bloom_blur_h_res = render_graph_->getResource(bloom_blur_h_id_);
+    auto& bloom_blurred_res = render_graph_->getResource(bloom_blurred_id_);
+
+    auto writeSet = [&](VkDescriptorSet set, uint32_t binding, VkImageView view,
+                        VkSampler sampler) {
+        VkDescriptorImageInfo img_info{};
+        img_info.sampler = sampler;
+        img_info.imageView = view;
+        img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = set;
+        write.dstBinding = binding;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &img_info;
+        vkUpdateDescriptorSets(dev, 1, &write, 0, nullptr);
+    };
+
+    // Extract reads pixel_color
+    writeSet(bloom_extract_set_, 0, pixel_color_res.view, bloom_sampler_);
+    // Blur H reads bloom_extract
+    writeSet(bloom_blur_h_set_, 0, bloom_extract_res.view, bloom_sampler_);
+    // Blur V reads bloom_blur_h
+    writeSet(bloom_blur_v_set_, 0, bloom_blur_h_res.view, bloom_sampler_);
+    // Composite reads pixel_color (nearest) + bloom_blurred (linear)
+    writeSet(bloom_composite_set_, 0, pixel_color_res.view, bloom_nearest_sampler_);
+    writeSet(bloom_composite_set_, 1, bloom_blurred_res.view, bloom_sampler_);
+
+    // Compute blur directions
+    bloom_blur_h_dir_ = {1.0f / static_cast<float>(bloom_extract_res.extent.width), 0.0f};
+    bloom_blur_v_dir_ = {0.0f, 1.0f / static_cast<float>(bloom_extract_res.extent.height)};
+
+    logInfo("Bloom descriptors created");
+}
+
+void Renderer::cleanupBloomDescriptors() {
+    VkDevice dev = device_->getHandle();
+    if (bloom_desc_pool_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(dev, bloom_desc_pool_, nullptr);
+        bloom_desc_pool_ = VK_NULL_HANDLE;
+    }
+    if (bloom_desc_layout_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(dev, bloom_desc_layout_, nullptr);
+        bloom_desc_layout_ = VK_NULL_HANDLE;
+    }
+    if (bloom_composite_desc_layout_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(dev, bloom_composite_desc_layout_, nullptr);
+        bloom_composite_desc_layout_ = VK_NULL_HANDLE;
+    }
+    if (bloom_sampler_ != VK_NULL_HANDLE) {
+        vkDestroySampler(dev, bloom_sampler_, nullptr);
+        bloom_sampler_ = VK_NULL_HANDLE;
+    }
+    if (bloom_nearest_sampler_ != VK_NULL_HANDLE) {
+        vkDestroySampler(dev, bloom_nearest_sampler_, nullptr);
+        bloom_nearest_sampler_ = VK_NULL_HANDLE;
+    }
 }
 
 void Renderer::createSkyboxCubemap() {
@@ -735,6 +995,8 @@ void Renderer::loadScene(int index) {
     fog_density_ = scene_->fog_density;
     light_dir_ = scene_->light_dir;
     light_cone_angle_ = scene_->light_cone_angle;
+    bloom_threshold_ = scene_->bloom_threshold;
+    bloom_intensity_ = scene_->bloom_intensity;
 }
 
 void Renderer::createCommandBuffers() {
@@ -853,14 +1115,19 @@ void Renderer::recreateSwapchain() {
     swapchain_->recreate(extent);
 
     // Rebuild graph (recreates transient resources, render passes, framebuffers)
+    cleanupBloomDescriptors();
     render_graph_.reset();
     buildRenderGraph();
+    createBloomDescriptors();
 
     // Recreate pipelines with new render passes
     pipeline_.reset();
     shadow_pipeline_.reset();
     skybox_pipeline_.reset();
     volumetric_pipeline_.reset();
+    bloom_extract_pipeline_.reset();
+    bloom_blur_pipeline_.reset();
+    bloom_composite_pipeline_.reset();
     createPipelines();
 
     // Recreate ImGui with new render pass

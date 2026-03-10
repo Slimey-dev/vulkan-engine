@@ -106,9 +106,9 @@ VulkanPipeline::VulkanPipeline(
 
     VkPushConstantRange push_range{};
     if (config.has_push_constants) {
-        push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        push_range.stageFlags = config.push_constant_stages;
         push_range.offset = 0;
-        push_range.size = sizeof(float) * 16;  // mat4
+        push_range.size = config.push_constant_size;
         layout_info.pushConstantRangeCount = 1;
         layout_info.pPushConstantRanges = &push_range;
     }

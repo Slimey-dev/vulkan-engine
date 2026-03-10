@@ -43,6 +43,9 @@ public:
     float shadow_ortho_size = 12.0f;
     float shadow_far = 20.0f;
     glm::vec3 shadow_up{0, 0, 1};
+
+    float bloom_threshold = 1.0f;
+    float bloom_intensity = 0.0f;
 };
 
 class OutdoorScene : public Scene {

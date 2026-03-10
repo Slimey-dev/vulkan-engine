@@ -14,6 +14,7 @@
 #include <engine/renderer/vk_texture.hpp>
 
 #include <glm/glm.hpp>
+#include <glm/vec2.hpp>
 
 #include <memory>
 #include <vector>
@@ -40,6 +41,8 @@ private:
     void createSkyboxCubemap();
     void createSkyboxMesh();
     void buildRenderGraph();
+    void createBloomDescriptors();
+    void cleanupBloomDescriptors();
     void createPipelines();
     void initImGui();
     void shutdownImGui();
@@ -88,6 +91,9 @@ private:
     VkSampler shadow_sampler_ = VK_NULL_HANDLE;
     std::unique_ptr<VulkanPipeline> shadow_pipeline_;
     std::unique_ptr<VulkanPipeline> volumetric_pipeline_;
+    std::unique_ptr<VulkanPipeline> bloom_extract_pipeline_;
+    std::unique_ptr<VulkanPipeline> bloom_blur_pipeline_;
+    std::unique_ptr<VulkanPipeline> bloom_composite_pipeline_;
 
     // Skybox
     VkImage skybox_image_ = VK_NULL_HANDLE;
@@ -108,14 +114,35 @@ private:
     ResourceId swapchain_id_{};
     ResourceId pixel_color_id_{};
     ResourceId pixel_depth_id_{};
+    ResourceId bloom_extract_id_{};
+    ResourceId bloom_blur_h_id_{};
+    ResourceId bloom_blurred_id_{};
 
     // Raw pointer aliases for pass bindings (point into unique_ptrs, updated by createPipelines)
     VulkanPipeline* pipeline_ptr_ = nullptr;
     VulkanPipeline* shadow_pipeline_ptr_ = nullptr;
     VulkanPipeline* skybox_pipeline_ptr_ = nullptr;
     VulkanPipeline* volumetric_pipeline_ptr_ = nullptr;
+    VulkanPipeline* bloom_extract_pipeline_ptr_ = nullptr;
+    VulkanPipeline* bloom_blur_pipeline_ptr_ = nullptr;
+    VulkanPipeline* bloom_composite_pipeline_ptr_ = nullptr;
     VulkanDescriptors* descriptors_ptr_ = nullptr;
     Scene* scene_ptr_ = nullptr;
+
+    // Bloom
+    VkDescriptorSetLayout bloom_desc_layout_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout bloom_composite_desc_layout_ = VK_NULL_HANDLE;
+    VkDescriptorPool bloom_desc_pool_ = VK_NULL_HANDLE;
+    VkSampler bloom_sampler_ = VK_NULL_HANDLE;
+    VkSampler bloom_nearest_sampler_ = VK_NULL_HANDLE;
+    VkDescriptorSet bloom_extract_set_ = VK_NULL_HANDLE;
+    VkDescriptorSet bloom_blur_h_set_ = VK_NULL_HANDLE;
+    VkDescriptorSet bloom_blur_v_set_ = VK_NULL_HANDLE;
+    VkDescriptorSet bloom_composite_set_ = VK_NULL_HANDLE;
+    float bloom_threshold_ = 1.0f;
+    float bloom_intensity_ = 0.0f;
+    glm::vec2 bloom_blur_h_dir_{};
+    glm::vec2 bloom_blur_v_dir_{};
 
     // ImGui
     VkDescriptorPool imgui_pool_ = VK_NULL_HANDLE;

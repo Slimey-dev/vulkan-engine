@@ -1,5 +1,8 @@
 #include <engine/ecs/components.hpp>
 #include <engine/renderer/passes/blit_pass.hpp>
+#include <engine/renderer/passes/bloom_blur_pass.hpp>
+#include <engine/renderer/passes/bloom_composite_pass.hpp>
+#include <engine/renderer/passes/bloom_extract_pass.hpp>
 #include <engine/renderer/passes/scene_pass.hpp>
 #include <engine/renderer/passes/shadow_pass.hpp>
 #include <engine/renderer/passes/ui_pass.hpp>
@@ -83,7 +86,9 @@ void ScenePass::record(VkCommandBuffer cmd, const RenderGraph& graph) {
             if (scene_->registry.has<VolumetricCone>(e)) return;
             PushConstants pc{};
             pc.model = t.matrix();
-            vkCmdPushConstants(cmd, pipeline_->getLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
+            pc.emissive = scene_->registry.has<Emissive>(e) ? 1.0f : 0.0f;
+            vkCmdPushConstants(cmd, pipeline_->getLayout(),
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                sizeof(PushConstants), &pc);
             mr.mesh->bind(cmd);
             mr.mesh->draw(cmd);
@@ -135,6 +140,54 @@ void BlitPass::record(VkCommandBuffer cmd, const RenderGraph& graph) {
 void UIPass::record(VkCommandBuffer cmd, const RenderGraph& graph) {
     ImGui::Render();
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+}
+
+// --- BloomExtractPass ---
+
+BloomExtractPass::BloomExtractPass(VulkanPipeline*& pipeline, VkDescriptorSet& desc_set,
+                                   float& threshold)
+    : pipeline_(pipeline), desc_set_(desc_set), threshold_(threshold) {}
+
+void BloomExtractPass::record(VkCommandBuffer cmd, const RenderGraph& graph) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->getHandle());
+    setViewportAndScissor(cmd, extent);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->getLayout(), 0, 1,
+                            &desc_set_, 0, nullptr);
+    vkCmdPushConstants(cmd, pipeline_->getLayout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float),
+                       &threshold_);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+}
+
+// --- BloomBlurPass ---
+
+BloomBlurPass::BloomBlurPass(VulkanPipeline*& pipeline, VkDescriptorSet& desc_set,
+                             glm::vec2& direction)
+    : pipeline_(pipeline), desc_set_(desc_set), direction_(direction) {}
+
+void BloomBlurPass::record(VkCommandBuffer cmd, const RenderGraph& graph) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->getHandle());
+    setViewportAndScissor(cmd, extent);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->getLayout(), 0, 1,
+                            &desc_set_, 0, nullptr);
+    vkCmdPushConstants(cmd, pipeline_->getLayout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(glm::vec2), &direction_);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+}
+
+// --- BloomCompositePass ---
+
+BloomCompositePass::BloomCompositePass(VulkanPipeline*& pipeline, VkDescriptorSet& desc_set,
+                                       float& intensity)
+    : pipeline_(pipeline), desc_set_(desc_set), intensity_(intensity) {}
+
+void BloomCompositePass::record(VkCommandBuffer cmd, const RenderGraph& graph) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->getHandle());
+    setViewportAndScissor(cmd, extent);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->getLayout(), 0, 1,
+                            &desc_set_, 0, nullptr);
+    vkCmdPushConstants(cmd, pipeline_->getLayout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float),
+                       &intensity_);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
 }
 
 }  // namespace engine
