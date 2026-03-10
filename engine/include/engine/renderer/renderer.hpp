@@ -3,6 +3,7 @@
 #include <engine/core/audio.hpp>
 #include <engine/core/camera.hpp>
 #include <engine/core/window.hpp>
+#include <engine/renderer/render_graph.hpp>
 #include <engine/renderer/vk_device.hpp>
 #include <engine/renderer/vk_instance.hpp>
 #include <engine/renderer/vk_descriptors.hpp>
@@ -38,8 +39,8 @@ private:
     void createShadowResources();
     void createSkyboxCubemap();
     void createSkyboxMesh();
-    void createPixelResources();
-    void cleanupPixelResources();
+    void buildRenderGraph();
+    void createPipelines();
     void initImGui();
     void shutdownImGui();
     void loadScene(int index);
@@ -47,7 +48,6 @@ private:
     void createSyncObjects();
     void updateUBO();
     void recordCommandBuffer(VkCommandBuffer cmd, uint32_t image_index);
-    void recordShadowPass(VkCommandBuffer cmd);
     void recreateSwapchain();
 
     Window& window_;
@@ -86,8 +86,6 @@ private:
     VkDeviceMemory shadow_image_memory_ = VK_NULL_HANDLE;
     VkImageView shadow_image_view_ = VK_NULL_HANDLE;
     VkSampler shadow_sampler_ = VK_NULL_HANDLE;
-    VkRenderPass shadow_render_pass_ = VK_NULL_HANDLE;
-    VkFramebuffer shadow_framebuffer_ = VK_NULL_HANDLE;
     std::unique_ptr<VulkanPipeline> shadow_pipeline_;
     std::unique_ptr<VulkanPipeline> volumetric_pipeline_;
 
@@ -103,22 +101,21 @@ private:
     VkDeviceMemory skybox_index_memory_ = VK_NULL_HANDLE;
     uint32_t skybox_index_count_ = 0;
 
-    // Pixelation (offscreen render target)
+    // Render graph
     static constexpr uint32_t PIXEL_SCALE = 8;
-    VkImage pixel_color_image_ = VK_NULL_HANDLE;
-    VkDeviceMemory pixel_color_memory_ = VK_NULL_HANDLE;
-    VkImageView pixel_color_view_ = VK_NULL_HANDLE;
-    VkImage pixel_depth_image_ = VK_NULL_HANDLE;
-    VkDeviceMemory pixel_depth_memory_ = VK_NULL_HANDLE;
-    VkImageView pixel_depth_view_ = VK_NULL_HANDLE;
-    VkRenderPass pixel_render_pass_ = VK_NULL_HANDLE;
-    VkFramebuffer pixel_framebuffer_ = VK_NULL_HANDLE;
-    uint32_t pixel_width_ = 0;
-    uint32_t pixel_height_ = 0;
+    std::unique_ptr<RenderGraph> render_graph_;
+    ResourceId shadow_map_id_{};
+    ResourceId swapchain_id_{};
+    ResourceId pixel_color_id_{};
+    ResourceId pixel_depth_id_{};
 
-    // UI overlay (full-res render pass over blitted swapchain)
-    VkRenderPass ui_render_pass_ = VK_NULL_HANDLE;
-    std::vector<VkFramebuffer> ui_framebuffers_;
+    // Raw pointer aliases for pass bindings (point into unique_ptrs, updated by createPipelines)
+    VulkanPipeline* pipeline_ptr_ = nullptr;
+    VulkanPipeline* shadow_pipeline_ptr_ = nullptr;
+    VulkanPipeline* skybox_pipeline_ptr_ = nullptr;
+    VulkanPipeline* volumetric_pipeline_ptr_ = nullptr;
+    VulkanDescriptors* descriptors_ptr_ = nullptr;
+    Scene* scene_ptr_ = nullptr;
 
     // ImGui
     VkDescriptorPool imgui_pool_ = VK_NULL_HANDLE;

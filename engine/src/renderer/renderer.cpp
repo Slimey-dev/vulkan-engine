@@ -1,5 +1,9 @@
 #include <engine/core/log.hpp>
 #include <engine/ecs/components.hpp>
+#include <engine/renderer/passes/blit_pass.hpp>
+#include <engine/renderer/passes/scene_pass.hpp>
+#include <engine/renderer/passes/shadow_pass.hpp>
+#include <engine/renderer/passes/ui_pass.hpp>
 #include <engine/renderer/renderer.hpp>
 #include <engine/renderer/vk_buffer.hpp>
 
@@ -23,7 +27,6 @@ Renderer::Renderer(Window& window) : window_(window) {
     device_ = std::make_unique<VulkanDevice>(instance_->getHandle(), surface_);
     swapchain_ = std::make_unique<VulkanSwapchain>(*device_, surface_, window_.getExtent());
     createCommandPool();
-    createPixelResources();
     createTexture();
     createShadowResources();
     createSkyboxCubemap();
@@ -31,70 +34,10 @@ Renderer::Renderer(Window& window) : window_(window) {
         *device_, MAX_FRAMES_IN_FLIGHT, texture_->getImageView(), texture_->getSampler(),
         shadow_image_view_, shadow_sampler_, skybox_image_view_, skybox_sampler_);
 
-    auto binding = Vertex::getBindingDescription();
-    auto attributes = Vertex::getAttributeDescriptions();
-
-    PipelineConfig shadow_config{};
-    shadow_config.depth_bias = true;
-    shadow_config.depth_bias_constant = 1.25f;
-    shadow_config.depth_bias_slope = 1.75f;
-    shadow_config.has_color_attachment = false;
-
-    shadow_pipeline_ = std::make_unique<VulkanPipeline>(
-        device_->getHandle(), shadow_render_pass_,
-        std::string(SHADER_DIR) + "shadow.vert.spv",
-        std::string(SHADER_DIR) + "shadow.frag.spv",
-        std::vector{binding},
-        std::vector<VkVertexInputAttributeDescription>(attributes.begin(), attributes.end()),
-        descriptors_->getLayout(), shadow_config);
-
-    pipeline_ = std::make_unique<VulkanPipeline>(
-        device_->getHandle(), pixel_render_pass_,
-        std::string(SHADER_DIR) + "triangle.vert.spv",
-        std::string(SHADER_DIR) + "triangle.frag.spv",
-        std::vector{binding},
-        std::vector<VkVertexInputAttributeDescription>(attributes.begin(), attributes.end()),
-        descriptors_->getLayout());
-
-    PipelineConfig vol_config{};
-    vol_config.depth_write = false;
-    vol_config.cull_mode = VK_CULL_MODE_NONE;  // two-sided
-    vol_config.additive_blend = true;
-    volumetric_pipeline_ = std::make_unique<VulkanPipeline>(
-        device_->getHandle(), pixel_render_pass_,
-        std::string(SHADER_DIR) + "volumetric.vert.spv",
-        std::string(SHADER_DIR) + "volumetric.frag.spv",
-        std::vector{binding},
-        std::vector<VkVertexInputAttributeDescription>(attributes.begin(), attributes.end()),
-        descriptors_->getLayout(), vol_config);
-
-    // Skybox pipeline (position-only vertex input)
-    VkVertexInputBindingDescription skybox_binding{};
-    skybox_binding.binding = 0;
-    skybox_binding.stride = sizeof(glm::vec3);
-    skybox_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-    VkVertexInputAttributeDescription skybox_attr{};
-    skybox_attr.binding = 0;
-    skybox_attr.location = 0;
-    skybox_attr.format = VK_FORMAT_R32G32B32_SFLOAT;
-    skybox_attr.offset = 0;
-
-    PipelineConfig skybox_config{};
-    skybox_config.depth_write = false;
-    skybox_config.depth_compare_op = VK_COMPARE_OP_LESS_OR_EQUAL;
-    skybox_config.cull_mode = VK_CULL_MODE_FRONT_BIT;
-    skybox_config.has_push_constants = false;
-
-    skybox_pipeline_ = std::make_unique<VulkanPipeline>(
-        device_->getHandle(), pixel_render_pass_,
-        std::string(SHADER_DIR) + "skybox.vert.spv",
-        std::string(SHADER_DIR) + "skybox.frag.spv",
-        std::vector{skybox_binding}, std::vector{skybox_attr},
-        descriptors_->getSkyboxLayout(), skybox_config);
-
     loadScene(0);
     createSkyboxMesh();
+    buildRenderGraph();
+    createPipelines();
     createCommandBuffers();
     createSyncObjects();
     initImGui();
@@ -125,12 +68,8 @@ Renderer::~Renderer() {
     descriptors_.reset();
     texture_.reset();
 
-    cleanupPixelResources();
-    vkDestroyRenderPass(device_->getHandle(), pixel_render_pass_, nullptr);
-    vkDestroyRenderPass(device_->getHandle(), ui_render_pass_, nullptr);
+    render_graph_.reset();
 
-    vkDestroyFramebuffer(device_->getHandle(), shadow_framebuffer_, nullptr);
-    vkDestroyRenderPass(device_->getHandle(), shadow_render_pass_, nullptr);
     vkDestroySampler(device_->getHandle(), shadow_sampler_, nullptr);
     vkDestroyImageView(device_->getHandle(), shadow_image_view_, nullptr);
     vkDestroyImage(device_->getHandle(), shadow_image_, nullptr);
@@ -415,316 +354,132 @@ void Renderer::createShadowResources() {
         throw std::runtime_error("Failed to create shadow sampler");
     }
 
-    // Create shadow render pass (depth-only)
-    VkAttachmentDescription depth_attachment{};
-    depth_attachment.format = depth_format;
-    depth_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depth_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    depth_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depth_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    depth_attachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-
-    VkAttachmentReference depth_ref{};
-    depth_ref.attachment = 0;
-    depth_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.pDepthStencilAttachment = &depth_ref;
-
-    VkSubpassDependency dep{};
-    dep.srcSubpass = 0;
-    dep.dstSubpass = VK_SUBPASS_EXTERNAL;
-    dep.srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    dep.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    dep.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    dep.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-    VkRenderPassCreateInfo rp_info{};
-    rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rp_info.attachmentCount = 1;
-    rp_info.pAttachments = &depth_attachment;
-    rp_info.subpassCount = 1;
-    rp_info.pSubpasses = &subpass;
-    rp_info.dependencyCount = 1;
-    rp_info.pDependencies = &dep;
-
-    if (vkCreateRenderPass(device_->getHandle(), &rp_info, nullptr, &shadow_render_pass_) !=
-        VK_SUCCESS) {
-        throw std::runtime_error("Failed to create shadow render pass");
-    }
-
-    // Create framebuffer
-    VkFramebufferCreateInfo fb_info{};
-    fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fb_info.renderPass = shadow_render_pass_;
-    fb_info.attachmentCount = 1;
-    fb_info.pAttachments = &shadow_image_view_;
-    fb_info.width = SHADOW_MAP_SIZE;
-    fb_info.height = SHADOW_MAP_SIZE;
-    fb_info.layers = 1;
-
-    if (vkCreateFramebuffer(device_->getHandle(), &fb_info, nullptr, &shadow_framebuffer_) !=
-        VK_SUCCESS) {
-        throw std::runtime_error("Failed to create shadow framebuffer");
-    }
-
     logInfo("Shadow map created ({}x{})", SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
 }
 
-void Renderer::createPixelResources() {
-    auto extent = swapchain_->getExtent();
-    pixel_width_ = std::max(extent.width / PIXEL_SCALE, 1u);
-    pixel_height_ = std::max(extent.height / PIXEL_SCALE, 1u);
+void Renderer::buildRenderGraph() {
+    RenderGraphBuilder builder(*device_);
 
-    VkFormat color_format = swapchain_->getImageFormat();
     VkFormat depth_format = swapchain_->getDepthFormat();
 
-    // Color image
-    VkImageCreateInfo color_info{};
-    color_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    color_info.imageType = VK_IMAGE_TYPE_2D;
-    color_info.format = color_format;
-    color_info.extent = {pixel_width_, pixel_height_, 1};
-    color_info.mipLevels = 1;
-    color_info.arrayLayers = 1;
-    color_info.samples = VK_SAMPLE_COUNT_1_BIT;
-    color_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    color_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    shadow_map_id_ = builder.importImage("shadow_map", shadow_image_, shadow_image_view_,
+                                         depth_format, {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE},
+                                         VK_IMAGE_ASPECT_DEPTH_BIT);
+    swapchain_id_ = builder.importSwapchain("swapchain", *swapchain_);
 
-    if (vkCreateImage(device_->getHandle(), &color_info, nullptr, &pixel_color_image_) !=
-        VK_SUCCESS) {
-        throw std::runtime_error("Failed to create pixel color image");
-    }
+    float scale = 1.0f / static_cast<float>(PIXEL_SCALE);
+    pixel_color_id_ = builder.createImage("pixel_color",
+                                          {.width_scale = scale,
+                                           .height_scale = scale,
+                                           .extra_usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
+    pixel_depth_id_ = builder.createImage("pixel_depth",
+                                          {.width_scale = scale,
+                                           .height_scale = scale,
+                                           .format = depth_format,
+                                           .aspect = VK_IMAGE_ASPECT_DEPTH_BIT});
 
-    VkMemoryRequirements mem_req;
-    vkGetImageMemoryRequirements(device_->getHandle(), pixel_color_image_, &mem_req);
+    auto* shadow = builder.addPass<ShadowPass>("shadow", shadow_pipeline_ptr_, descriptors_ptr_,
+                                               scene_ptr_, current_frame_);
+    shadow->extent = {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE};
+    VkClearValue shadow_clear{};
+    shadow_clear.depthStencil = {1.0f, 0};
+    shadow->clear_values = {shadow_clear};
+    builder.passWrites(shadow, shadow_map_id_, ResourceUsage::DepthAttachmentWrite);
 
-    VkMemoryAllocateInfo alloc_info{};
-    alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    alloc_info.allocationSize = mem_req.size;
-    alloc_info.memoryTypeIndex = vk_buffer::findMemoryType(
-        device_->getPhysicalDevice(), mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    auto* scene_pass = builder.addPass<ScenePass>(
+        "scene", pipeline_ptr_, skybox_pipeline_ptr_, volumetric_pipeline_ptr_, descriptors_ptr_,
+        scene_ptr_, current_frame_, skybox_vertex_buffer_, skybox_index_buffer_,
+        skybox_index_count_);
+    VkClearValue color_clear{};
+    color_clear.color = {{fog_color_.x, fog_color_.y, fog_color_.z, 1.0f}};
+    VkClearValue depth_clear{};
+    depth_clear.depthStencil = {1.0f, 0};
+    scene_pass->clear_values = {color_clear, depth_clear};
+    builder.passReads(scene_pass, shadow_map_id_, ResourceUsage::ShaderReadOnly);
+    builder.passWrites(scene_pass, pixel_color_id_, ResourceUsage::ColorAttachmentWrite);
+    builder.passWrites(scene_pass, pixel_depth_id_, ResourceUsage::DepthAttachmentWrite);
 
-    if (vkAllocateMemory(device_->getHandle(), &alloc_info, nullptr, &pixel_color_memory_) !=
-        VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate pixel color memory");
-    }
-    vkBindImageMemory(device_->getHandle(), pixel_color_image_, pixel_color_memory_, 0);
+    auto* blit = builder.addPass<BlitPass>("blit", pixel_color_id_, swapchain_id_);
+    builder.passReads(blit, pixel_color_id_, ResourceUsage::TransferSrc);
+    builder.passWrites(blit, swapchain_id_, ResourceUsage::TransferDst);
 
-    VkImageViewCreateInfo color_view_info{};
-    color_view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    color_view_info.image = pixel_color_image_;
-    color_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    color_view_info.format = color_format;
-    color_view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    auto* ui = builder.addPass<UIPass>("ui");
+    builder.passWrites(ui, swapchain_id_, ResourceUsage::ColorAttachmentWrite);
 
-    if (vkCreateImageView(device_->getHandle(), &color_view_info, nullptr, &pixel_color_view_) !=
-        VK_SUCCESS) {
-        throw std::runtime_error("Failed to create pixel color image view");
-    }
-
-    // Depth image
-    VkImageCreateInfo depth_info{};
-    depth_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    depth_info.imageType = VK_IMAGE_TYPE_2D;
-    depth_info.format = depth_format;
-    depth_info.extent = {pixel_width_, pixel_height_, 1};
-    depth_info.mipLevels = 1;
-    depth_info.arrayLayers = 1;
-    depth_info.samples = VK_SAMPLE_COUNT_1_BIT;
-    depth_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    depth_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-
-    if (vkCreateImage(device_->getHandle(), &depth_info, nullptr, &pixel_depth_image_) !=
-        VK_SUCCESS) {
-        throw std::runtime_error("Failed to create pixel depth image");
-    }
-
-    vkGetImageMemoryRequirements(device_->getHandle(), pixel_depth_image_, &mem_req);
-    alloc_info.allocationSize = mem_req.size;
-    alloc_info.memoryTypeIndex = vk_buffer::findMemoryType(
-        device_->getPhysicalDevice(), mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-    if (vkAllocateMemory(device_->getHandle(), &alloc_info, nullptr, &pixel_depth_memory_) !=
-        VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate pixel depth memory");
-    }
-    vkBindImageMemory(device_->getHandle(), pixel_depth_image_, pixel_depth_memory_, 0);
-
-    VkImageViewCreateInfo depth_view_info{};
-    depth_view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    depth_view_info.image = pixel_depth_image_;
-    depth_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    depth_view_info.format = depth_format;
-    depth_view_info.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-
-    if (vkCreateImageView(device_->getHandle(), &depth_view_info, nullptr, &pixel_depth_view_) !=
-        VK_SUCCESS) {
-        throw std::runtime_error("Failed to create pixel depth image view");
-    }
-
-    // Render pass (color → TRANSFER_SRC for blit)
-    if (pixel_render_pass_ == VK_NULL_HANDLE) {
-        VkAttachmentDescription color_att{};
-        color_att.format = color_format;
-        color_att.samples = VK_SAMPLE_COUNT_1_BIT;
-        color_att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        color_att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        color_att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        color_att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        color_att.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        color_att.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-
-        VkAttachmentDescription depth_att{};
-        depth_att.format = depth_format;
-        depth_att.samples = VK_SAMPLE_COUNT_1_BIT;
-        depth_att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depth_att.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depth_att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        depth_att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depth_att.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        depth_att.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-        VkAttachmentReference color_ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-        VkAttachmentReference depth_ref{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-
-        VkSubpassDescription subpass{};
-        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = 1;
-        subpass.pColorAttachments = &color_ref;
-        subpass.pDepthStencilAttachment = &depth_ref;
-
-        VkSubpassDependency dep{};
-        dep.srcSubpass = 0;
-        dep.dstSubpass = VK_SUBPASS_EXTERNAL;
-        dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        dep.dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
-        dep.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-
-        std::array<VkAttachmentDescription, 2> attachments = {color_att, depth_att};
-
-        VkRenderPassCreateInfo rp_info{};
-        rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        rp_info.attachmentCount = static_cast<uint32_t>(attachments.size());
-        rp_info.pAttachments = attachments.data();
-        rp_info.subpassCount = 1;
-        rp_info.pSubpasses = &subpass;
-        rp_info.dependencyCount = 1;
-        rp_info.pDependencies = &dep;
-
-        if (vkCreateRenderPass(device_->getHandle(), &rp_info, nullptr, &pixel_render_pass_) !=
-            VK_SUCCESS) {
-            throw std::runtime_error("Failed to create pixel render pass");
-        }
-    }
-
-    // Framebuffer
-    std::array<VkImageView, 2> fb_attachments = {pixel_color_view_, pixel_depth_view_};
-
-    VkFramebufferCreateInfo fb_info{};
-    fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fb_info.renderPass = pixel_render_pass_;
-    fb_info.attachmentCount = static_cast<uint32_t>(fb_attachments.size());
-    fb_info.pAttachments = fb_attachments.data();
-    fb_info.width = pixel_width_;
-    fb_info.height = pixel_height_;
-    fb_info.layers = 1;
-
-    if (vkCreateFramebuffer(device_->getHandle(), &fb_info, nullptr, &pixel_framebuffer_) !=
-        VK_SUCCESS) {
-        throw std::runtime_error("Failed to create pixel framebuffer");
-    }
-
-    // UI overlay render pass (loads blitted swapchain content, renders ImGui at full res)
-    if (ui_render_pass_ == VK_NULL_HANDLE) {
-        VkAttachmentDescription color_att{};
-        color_att.format = color_format;
-        color_att.samples = VK_SAMPLE_COUNT_1_BIT;
-        color_att.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-        color_att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        color_att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        color_att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        color_att.initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        color_att.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
-        VkAttachmentReference color_ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-
-        VkSubpassDescription subpass{};
-        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = 1;
-        subpass.pColorAttachments = &color_ref;
-
-        VkSubpassDependency dep{};
-        dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-        dep.dstSubpass = 0;
-        dep.srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
-        dep.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dep.dstAccessMask =
-            VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-        VkRenderPassCreateInfo rp_info{};
-        rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        rp_info.attachmentCount = 1;
-        rp_info.pAttachments = &color_att;
-        rp_info.subpassCount = 1;
-        rp_info.pSubpasses = &subpass;
-        rp_info.dependencyCount = 1;
-        rp_info.pDependencies = &dep;
-
-        if (vkCreateRenderPass(device_->getHandle(), &rp_info, nullptr, &ui_render_pass_) !=
-            VK_SUCCESS) {
-            throw std::runtime_error("Failed to create UI overlay render pass");
-        }
-    }
-
-    // UI framebuffers (one per swapchain image)
-    ui_framebuffers_.resize(swapchain_->getImageCount());
-    for (uint32_t i = 0; i < swapchain_->getImageCount(); i++) {
-        VkImageView view = swapchain_->getImageView(i);
-
-        VkFramebufferCreateInfo ui_fb_info{};
-        ui_fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        ui_fb_info.renderPass = ui_render_pass_;
-        ui_fb_info.attachmentCount = 1;
-        ui_fb_info.pAttachments = &view;
-        ui_fb_info.width = swapchain_->getExtent().width;
-        ui_fb_info.height = swapchain_->getExtent().height;
-        ui_fb_info.layers = 1;
-
-        if (vkCreateFramebuffer(device_->getHandle(), &ui_fb_info, nullptr,
-                                &ui_framebuffers_[i]) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create UI overlay framebuffer");
-        }
-    }
-
-    logInfo("Pixel resources created ({}x{}, scale 1/{})", pixel_width_, pixel_height_,
-            PIXEL_SCALE);
+    render_graph_ = builder.build(swapchain_->getExtent());
+    logInfo("Render graph built");
 }
 
-void Renderer::cleanupPixelResources() {
-    for (auto fb : ui_framebuffers_) {
-        vkDestroyFramebuffer(device_->getHandle(), fb, nullptr);
-    }
-    ui_framebuffers_.clear();
-    vkDestroyFramebuffer(device_->getHandle(), pixel_framebuffer_, nullptr);
-    pixel_framebuffer_ = VK_NULL_HANDLE;
-    vkDestroyImageView(device_->getHandle(), pixel_color_view_, nullptr);
-    pixel_color_view_ = VK_NULL_HANDLE;
-    vkDestroyImage(device_->getHandle(), pixel_color_image_, nullptr);
-    pixel_color_image_ = VK_NULL_HANDLE;
-    vkFreeMemory(device_->getHandle(), pixel_color_memory_, nullptr);
-    pixel_color_memory_ = VK_NULL_HANDLE;
-    vkDestroyImageView(device_->getHandle(), pixel_depth_view_, nullptr);
-    pixel_depth_view_ = VK_NULL_HANDLE;
-    vkDestroyImage(device_->getHandle(), pixel_depth_image_, nullptr);
-    pixel_depth_image_ = VK_NULL_HANDLE;
-    vkFreeMemory(device_->getHandle(), pixel_depth_memory_, nullptr);
-    pixel_depth_memory_ = VK_NULL_HANDLE;
+void Renderer::createPipelines() {
+    auto binding = Vertex::getBindingDescription();
+    auto attributes = Vertex::getAttributeDescriptions();
+
+    PipelineConfig shadow_config{};
+    shadow_config.depth_bias = true;
+    shadow_config.depth_bias_constant = 1.25f;
+    shadow_config.depth_bias_slope = 1.75f;
+    shadow_config.has_color_attachment = false;
+
+    shadow_pipeline_ = std::make_unique<VulkanPipeline>(
+        device_->getHandle(), render_graph_->getRenderPass("shadow"),
+        std::string(SHADER_DIR) + "shadow.vert.spv",
+        std::string(SHADER_DIR) + "shadow.frag.spv",
+        std::vector{binding},
+        std::vector<VkVertexInputAttributeDescription>(attributes.begin(), attributes.end()),
+        descriptors_->getLayout(), shadow_config);
+
+    pipeline_ = std::make_unique<VulkanPipeline>(
+        device_->getHandle(), render_graph_->getRenderPass("scene"),
+        std::string(SHADER_DIR) + "triangle.vert.spv",
+        std::string(SHADER_DIR) + "triangle.frag.spv",
+        std::vector{binding},
+        std::vector<VkVertexInputAttributeDescription>(attributes.begin(), attributes.end()),
+        descriptors_->getLayout());
+
+    PipelineConfig vol_config{};
+    vol_config.depth_write = false;
+    vol_config.cull_mode = VK_CULL_MODE_NONE;
+    vol_config.additive_blend = true;
+    volumetric_pipeline_ = std::make_unique<VulkanPipeline>(
+        device_->getHandle(), render_graph_->getRenderPass("scene"),
+        std::string(SHADER_DIR) + "volumetric.vert.spv",
+        std::string(SHADER_DIR) + "volumetric.frag.spv",
+        std::vector{binding},
+        std::vector<VkVertexInputAttributeDescription>(attributes.begin(), attributes.end()),
+        descriptors_->getLayout(), vol_config);
+
+    // Skybox pipeline
+    VkVertexInputBindingDescription skybox_binding{};
+    skybox_binding.binding = 0;
+    skybox_binding.stride = sizeof(glm::vec3);
+    skybox_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription skybox_attr{};
+    skybox_attr.binding = 0;
+    skybox_attr.location = 0;
+    skybox_attr.format = VK_FORMAT_R32G32B32_SFLOAT;
+    skybox_attr.offset = 0;
+
+    PipelineConfig skybox_config{};
+    skybox_config.depth_write = false;
+    skybox_config.depth_compare_op = VK_COMPARE_OP_LESS_OR_EQUAL;
+    skybox_config.cull_mode = VK_CULL_MODE_FRONT_BIT;
+    skybox_config.has_push_constants = false;
+
+    skybox_pipeline_ = std::make_unique<VulkanPipeline>(
+        device_->getHandle(), render_graph_->getRenderPass("scene"),
+        std::string(SHADER_DIR) + "skybox.vert.spv",
+        std::string(SHADER_DIR) + "skybox.frag.spv",
+        std::vector{skybox_binding}, std::vector{skybox_attr},
+        descriptors_->getSkyboxLayout(), skybox_config);
+
+    // Update pointer aliases for pass bindings
+    pipeline_ptr_ = pipeline_.get();
+    shadow_pipeline_ptr_ = shadow_pipeline_.get();
+    skybox_pipeline_ptr_ = skybox_pipeline_.get();
+    volumetric_pipeline_ptr_ = volumetric_pipeline_.get();
+    descriptors_ptr_ = descriptors_.get();
+    scene_ptr_ = scene_.get();
 }
 
 void Renderer::createSkyboxCubemap() {
@@ -966,6 +721,7 @@ void Renderer::loadScene(int index) {
         scene_ = std::make_unique<OutdoorScene>();
     }
     scene_->init(*device_, command_pool_);
+    scene_ptr_ = scene_.get();
     current_scene_index_ = index;
 
     camera_.reset(scene_->camera_start, scene_->camera_yaw, scene_->camera_pitch);
@@ -1024,51 +780,6 @@ void Renderer::createSyncObjects() {
     }
 }
 
-void Renderer::recordShadowPass(VkCommandBuffer cmd) {
-    VkRenderPassBeginInfo rp_info{};
-    rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rp_info.renderPass = shadow_render_pass_;
-    rp_info.framebuffer = shadow_framebuffer_;
-    rp_info.renderArea.offset = {0, 0};
-    rp_info.renderArea.extent = {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE};
-
-    VkClearValue clear_value{};
-    clear_value.depthStencil = {1.0f, 0};
-    rp_info.clearValueCount = 1;
-    rp_info.pClearValues = &clear_value;
-
-    vkCmdBeginRenderPass(cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline_->getHandle());
-
-    VkDescriptorSet desc_set = descriptors_->getSet(current_frame_);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline_->getLayout(),
-                            0, 1, &desc_set, 0, nullptr);
-
-    VkViewport viewport{};
-    viewport.width = static_cast<float>(SHADOW_MAP_SIZE);
-    viewport.height = static_cast<float>(SHADOW_MAP_SIZE);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-
-    VkRect2D scissor{};
-    scissor.extent = {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE};
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-    scene_->registry.each<Transform, MeshRenderer>(
-        [&](Entity e, Transform& t, MeshRenderer& mr) {
-            if (scene_->registry.has<VolumetricCone>(e)) return;
-            PushConstants pc{};
-            pc.model = t.matrix();
-            vkCmdPushConstants(cmd, shadow_pipeline_->getLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
-                               sizeof(PushConstants), &pc);
-            mr.mesh->bind(cmd);
-            mr.mesh->draw(cmd);
-        });
-
-    vkCmdEndRenderPass(cmd);
-}
-
 void Renderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t image_index) {
     VkCommandBufferBeginInfo begin_info{};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1077,143 +788,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t image_index) {
         throw std::runtime_error("Failed to begin recording command buffer");
     }
 
-    // Shadow pass
-    recordShadowPass(cmd);
-
-    // Offscreen pass (low-res pixel render target)
-    VkRenderPassBeginInfo rp_info{};
-    rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rp_info.renderPass = pixel_render_pass_;
-    rp_info.framebuffer = pixel_framebuffer_;
-    rp_info.renderArea.offset = {0, 0};
-    rp_info.renderArea.extent = {pixel_width_, pixel_height_};
-
-    std::array<VkClearValue, 2> clear_values{};
-    clear_values[0].color = {{fog_color_.x, fog_color_.y, fog_color_.z, 1.0f}};
-    clear_values[1].depthStencil = {1.0f, 0};
-    rp_info.clearValueCount = static_cast<uint32_t>(clear_values.size());
-    rp_info.pClearValues = clear_values.data();
-
-    vkCmdBeginRenderPass(cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
-
-    VkViewport viewport{};
-    viewport.width = static_cast<float>(pixel_width_);
-    viewport.height = static_cast<float>(pixel_height_);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-
-    VkRect2D scissor{};
-    scissor.extent = {pixel_width_, pixel_height_};
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-    // Skybox (drawn first; pos.xyww places it at max depth)
-    if (scene_->skybox_enabled) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skybox_pipeline_->getHandle());
-        VkDescriptorSet skybox_set = descriptors_->getSkyboxSet(current_frame_);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skybox_pipeline_->getLayout(),
-                                0, 1, &skybox_set, 0, nullptr);
-        VkBuffer skybox_buffers[] = {skybox_vertex_buffer_};
-        VkDeviceSize skybox_offsets[] = {0};
-        vkCmdBindVertexBuffers(cmd, 0, 1, skybox_buffers, skybox_offsets);
-        vkCmdBindIndexBuffer(cmd, skybox_index_buffer_, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, skybox_index_count_, 1, 0, 0, 0);
-    }
-
-    // Scene entities
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->getHandle());
-    VkDescriptorSet desc_set = descriptors_->getSet(current_frame_);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->getLayout(), 0, 1,
-                            &desc_set, 0, nullptr);
-
-    scene_->registry.each<Transform, MeshRenderer>(
-        [&](Entity e, Transform& t, MeshRenderer& mr) {
-            if (scene_->registry.has<VolumetricCone>(e)) return;
-            PushConstants pc{};
-            pc.model = t.matrix();
-            vkCmdPushConstants(cmd, pipeline_->getLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
-                               sizeof(PushConstants), &pc);
-            mr.mesh->bind(cmd);
-            mr.mesh->draw(cmd);
-        });
-
-    // Volumetric light cone (additive blend, no depth write)
-    scene_->registry.each<Transform, MeshRenderer, VolumetricCone>(
-        [&](Entity, Transform& t, MeshRenderer& mr, VolumetricCone&) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              volumetric_pipeline_->getHandle());
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    volumetric_pipeline_->getLayout(), 0, 1, &desc_set, 0,
-                                    nullptr);
-            PushConstants pc{};
-            pc.model = t.matrix();
-            vkCmdPushConstants(cmd, volumetric_pipeline_->getLayout(), VK_SHADER_STAGE_VERTEX_BIT,
-                               0, sizeof(PushConstants), &pc);
-            mr.mesh->bind(cmd);
-            mr.mesh->draw(cmd);
-        });
-
-    vkCmdEndRenderPass(cmd);
-
-    // Blit offscreen → swapchain with nearest filtering (pixelated upscale)
-    VkImage swapchain_image = swapchain_->getImage(image_index);
-
-    VkImageMemoryBarrier pre_blit{};
-    pre_blit.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    pre_blit.srcAccessMask = 0;
-    pre_blit.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    pre_blit.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    pre_blit.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    pre_blit.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    pre_blit.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    pre_blit.image = swapchain_image;
-    pre_blit.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                         0, nullptr, 0, nullptr, 1, &pre_blit);
-
-    VkImageBlit blit_region{};
-    blit_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    blit_region.srcOffsets[0] = {0, 0, 0};
-    blit_region.srcOffsets[1] = {static_cast<int32_t>(pixel_width_),
-                                 static_cast<int32_t>(pixel_height_), 1};
-    blit_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    blit_region.dstOffsets[0] = {0, 0, 0};
-    blit_region.dstOffsets[1] = {static_cast<int32_t>(swapchain_->getExtent().width),
-                                 static_cast<int32_t>(swapchain_->getExtent().height), 1};
-
-    vkCmdBlitImage(cmd, pixel_color_image_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchain_image,
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit_region, VK_FILTER_NEAREST);
-
-    VkImageMemoryBarrier post_blit{};
-    post_blit.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    post_blit.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    post_blit.dstAccessMask = 0;
-    post_blit.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    post_blit.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    post_blit.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    post_blit.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    post_blit.image = swapchain_image;
-    post_blit.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr,
-                         1, &post_blit);
-
-    // UI overlay pass (ImGui at full resolution)
-    VkRenderPassBeginInfo ui_rp_info{};
-    ui_rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    ui_rp_info.renderPass = ui_render_pass_;
-    ui_rp_info.framebuffer = ui_framebuffers_[image_index];
-    ui_rp_info.renderArea.offset = {0, 0};
-    ui_rp_info.renderArea.extent = swapchain_->getExtent();
-
-    vkCmdBeginRenderPass(cmd, &ui_rp_info, VK_SUBPASS_CONTENTS_INLINE);
-
-    ImGui::Render();
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
-
-    vkCmdEndRenderPass(cmd);
+    render_graph_->execute(cmd, image_index, current_frame_);
 
     if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
         throw std::runtime_error("Failed to record command buffer");
@@ -1253,7 +828,7 @@ void Renderer::initImGui() {
     init_info.DescriptorPool = imgui_pool_;
     init_info.MinImageCount = 2;
     init_info.ImageCount = swapchain_->getImageCount();
-    init_info.PipelineInfoMain.RenderPass = ui_render_pass_;
+    init_info.PipelineInfoMain.RenderPass = render_graph_->getRenderPass("ui");
     init_info.PipelineInfoMain.Subpass = 0;
 
     ImGui_ImplVulkan_Init(&init_info);
@@ -1274,9 +849,23 @@ void Renderer::recreateSwapchain() {
         glfwWaitEvents();
     }
 
+    vkDeviceWaitIdle(device_->getHandle());
     swapchain_->recreate(extent);
-    cleanupPixelResources();
-    createPixelResources();
+
+    // Rebuild graph (recreates transient resources, render passes, framebuffers)
+    render_graph_.reset();
+    buildRenderGraph();
+
+    // Recreate pipelines with new render passes
+    pipeline_.reset();
+    shadow_pipeline_.reset();
+    skybox_pipeline_.reset();
+    volumetric_pipeline_.reset();
+    createPipelines();
+
+    // Recreate ImGui with new render pass
+    shutdownImGui();
+    initImGui();
 }
 
 }  // namespace engine
