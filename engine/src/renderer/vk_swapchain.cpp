@@ -318,6 +318,10 @@ VkPresentModeKHR VulkanSwapchain::choosePresentMode() {
     vkGetPhysicalDeviceSurfacePresentModesKHR(device_.getPhysicalDevice(), surface_, &count,
                                               modes.data());
 
+    // Prefer IMMEDIATE for uncapped FPS, then MAILBOX, then FIFO (vsync)
+    for (auto mode : modes) {
+        if (mode == VK_PRESENT_MODE_IMMEDIATE_KHR) return mode;
+    }
     for (auto mode : modes) {
         if (mode == VK_PRESENT_MODE_MAILBOX_KHR) return mode;
     }
