@@ -36,6 +36,11 @@ target_link_libraries(VulkanEngine
     PRIVATE dl pthread m
 )
 
+if(APPLE)
+    target_sources(VulkanEngine PRIVATE src/core/macos_fullscreen.mm)
+    target_link_libraries(VulkanEngine PRIVATE "-framework Cocoa")
+endif()
+
 target_compile_definitions(VulkanEngine
     PUBLIC  GLFW_INCLUDE_VULKAN
             GLM_FORCE_RADIANS

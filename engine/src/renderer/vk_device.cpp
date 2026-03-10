@@ -10,6 +10,7 @@
 namespace engine {
 
 static const std::vector<const char*> kDeviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+static constexpr const char* kPortabilitySubsetExt = "VK_KHR_portability_subset";
 
 VulkanDevice::VulkanDevice(VkInstance instance, VkSurfaceKHR surface) : surface_(surface) {
     pickPhysicalDevice(instance, surface);
@@ -80,13 +81,18 @@ void VulkanDevice::createLogicalDevice() {
     VkPhysicalDeviceFeatures features{};
     features.samplerAnisotropy = VK_TRUE;
 
+    std::vector<const char*> device_extensions(kDeviceExtensions.begin(), kDeviceExtensions.end());
+    if (portability_subset_) {
+        device_extensions.push_back(kPortabilitySubsetExt);
+    }
+
     VkDeviceCreateInfo create_info{};
     create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     create_info.queueCreateInfoCount = static_cast<uint32_t>(queue_infos.size());
     create_info.pQueueCreateInfos = queue_infos.data();
     create_info.pEnabledFeatures = &features;
-    create_info.enabledExtensionCount = static_cast<uint32_t>(kDeviceExtensions.size());
-    create_info.ppEnabledExtensionNames = kDeviceExtensions.data();
+    create_info.enabledExtensionCount = static_cast<uint32_t>(device_extensions.size());
+    create_info.ppEnabledExtensionNames = device_extensions.data();
 
     if (vkCreateDevice(physical_device_, &create_info, nullptr, &device_) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create logical device");
@@ -133,10 +139,15 @@ bool VulkanDevice::isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surfac
     vkEnumerateDeviceExtensionProperties(device, nullptr, &ext_count, available.data());
 
     std::set<std::string> required(kDeviceExtensions.begin(), kDeviceExtensions.end());
+    bool has_portability = false;
     for (const auto& ext : available) {
         required.erase(ext.extensionName);
+        if (std::strcmp(ext.extensionName, kPortabilitySubsetExt) == 0) {
+            has_portability = true;
+        }
     }
     if (!required.empty()) return false;
+    portability_subset_ = has_portability;
 
     // Check swapchain support
     uint32_t format_count, mode_count;

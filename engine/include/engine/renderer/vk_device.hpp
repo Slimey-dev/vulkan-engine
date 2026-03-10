@@ -39,6 +39,7 @@ private:
     VkQueue present_queue_ = VK_NULL_HANDLE;
     QueueFamilyIndices queue_families_;
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
+    bool portability_subset_ = false;
 };
 
 }  // namespace engine

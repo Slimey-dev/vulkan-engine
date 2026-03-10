@@ -1,5 +1,8 @@
 #include <engine/core/log.hpp>
 #include <engine/core/window.hpp>
+#ifdef __APPLE__
+#include <engine/core/macos_fullscreen.hpp>
+#endif
 
 #include <stdexcept>
 
@@ -15,11 +18,21 @@ Window::Window(const std::string& title) {
     width_ = mode->width;
     height_ = mode->height;
 
+#ifdef __APPLE__
+    // Create windowed, then enter macOS native fullscreen (no flicker)
+    window_ = glfwCreateWindow(width_, height_, title.c_str(), nullptr, nullptr);
+#else
     window_ = glfwCreateWindow(width_, height_, title.c_str(), monitor, nullptr);
+#endif
     if (!window_) {
         glfwTerminate();
         throw std::runtime_error("Failed to create GLFW window");
     }
+
+#ifdef __APPLE__
+    enableNativeFullscreen(window_);
+    toggleNativeFullscreen(window_);
+#endif
 
     glfwSetWindowUserPointer(window_, this);
     glfwSetFramebufferSizeCallback(window_, framebufferResizeCallback);
@@ -27,7 +40,9 @@ Window::Window(const std::string& title) {
     glfwSetScrollCallback(window_, scrollCallback);
     glfwSetKeyCallback(window_, keyCallback);
 
-    logInfo("Window created: {}x{}", width_, height_);
+    int fb_w, fb_h;
+    glfwGetFramebufferSize(window_, &fb_w, &fb_h);
+    logInfo("Window created: {}x{} (framebuffer: {}x{})", width_, height_, fb_w, fb_h);
 }
 
 Window::~Window() {
