@@ -44,5 +44,9 @@ void main() {
     // Combine: bright near lamp, fading toward floor, soft near walls
     float intensity = fresnel * heightFade * wallFade * 0.15;
 
-    outColor = vec4(fragColor * intensity, 1.0);
+    // Bloom glow near the lamp: use a steep power curve so only the top
+    // of the cone (heightFade close to 1) produces values above the bloom threshold
+    float bloomGlow = pow(heightFade, 6.0) * fresnel * wallFade * 1.2;
+
+    outColor = vec4(fragColor * (intensity + bloomGlow), 1.0);
 }

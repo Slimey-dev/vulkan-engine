@@ -1,3 +1,4 @@
+#include <vulkan/vulkan_core.h>
 #include <engine/core/log.hpp>
 #include <engine/renderer/render_graph.hpp>
 #include <engine/renderer/vk_buffer.hpp>
@@ -148,6 +149,12 @@ void RenderGraph::execute(VkCommandBuffer cmd, uint32_t swapchain_image_index,
             vkCmdBeginRenderPass(cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
             pass->record(cmd, *this);
             vkCmdEndRenderPass(cmd);
+
+            // Update tracked layouts to match render pass finalLayout
+            for (size_t i = 0; i < pass->outputs.size(); i++) {
+                auto res_idx = static_cast<uint32_t>(pass->outputs[i].id);
+                resources_[res_idx].current_layout = pass->output_final_layouts[i];
+            }
         } else {
             pass->record(cmd, *this);
         }
@@ -562,6 +569,7 @@ void RenderGraphBuilder::createRenderPasses() {
                 color_refs.push_back(ref);
             }
 
+            pass->output_final_layouts.push_back(att.finalLayout);
             attachments.push_back(att);
         }
 

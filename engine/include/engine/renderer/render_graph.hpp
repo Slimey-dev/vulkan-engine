@@ -74,6 +74,9 @@ public:
     std::vector<VkClearValue> clear_values;
     bool is_transfer_pass = false;
 
+    // Final layout for each output attachment (parallel to outputs)
+    std::vector<VkImageLayout> output_final_layouts;
+
     // For swapchain-indexed framebuffers (e.g. UI pass)
     std::vector<VkFramebuffer> per_image_framebuffers;
 };
