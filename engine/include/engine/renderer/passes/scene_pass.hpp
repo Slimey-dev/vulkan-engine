@@ -10,24 +10,29 @@ class VulkanDescriptors;
 class VulkanPipeline;
 class Scene;
 
+struct ScenePassContext {
+    VulkanPipeline*& pipeline;
+    VulkanPipeline*& skybox_pipeline;
+    VulkanPipeline*& volumetric_pipeline;
+    VulkanPipeline*& debug_line_pipeline;
+    VulkanDescriptors*& descriptors;
+    Scene*& scene;
+    uint32_t& current_frame;
+    VkBuffer& skybox_vertex_buffer;
+    VkBuffer& skybox_index_buffer;
+    uint32_t& skybox_index_count;
+    VkBuffer& debug_line_buffer;
+    uint32_t& debug_line_vertex_count;
+    bool& show_debug_rays;
+};
+
 class ScenePass : public RenderPassNode {
 public:
-    ScenePass(VulkanPipeline*& pipeline, VulkanPipeline*& skybox_pipeline,
-              VulkanPipeline*& volumetric_pipeline, VulkanDescriptors*& descriptors, Scene*& scene,
-              uint32_t& current_frame, VkBuffer& skybox_vertex_buffer,
-              VkBuffer& skybox_index_buffer, uint32_t& skybox_index_count);
+    explicit ScenePass(ScenePassContext ctx);
     void record(VkCommandBuffer cmd, const RenderGraph& graph) override;
 
 private:
-    VulkanPipeline*& pipeline_;
-    VulkanPipeline*& skybox_pipeline_;
-    VulkanPipeline*& volumetric_pipeline_;
-    VulkanDescriptors*& descriptors_;
-    Scene*& scene_;
-    uint32_t& current_frame_;
-    VkBuffer& skybox_vertex_buffer_;
-    VkBuffer& skybox_index_buffer_;
-    uint32_t& skybox_index_count_;
+    ScenePassContext ctx_;
 };
 
 }  // namespace engine

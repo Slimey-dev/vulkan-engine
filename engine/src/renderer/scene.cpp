@@ -11,6 +11,14 @@ namespace engine {
 
 // OutdoorScene
 
+std::vector<const AcousticMesh*> Scene::getAcousticMeshes() const {
+    std::vector<const AcousticMesh*> result;
+    for (const auto& mesh : meshes) {
+        if (mesh->acousticMesh()) result.push_back(mesh->acousticMesh());
+    }
+    return result;
+}
+
 void OutdoorScene::init(VulkanDevice& device, VkCommandPool pool) {
     meshes.push_back(
         Mesh::loadFromOBJ(device, pool, std::string(ASSETS_DIR) + "cube.obj"));
@@ -109,7 +117,7 @@ static void createRoomMesh(VulkanDevice& device, VkCommandPool pool,
     quad({xp, yn, zn}, {xp, yn, zp}, {xp, yp, zp}, {xp, yp, zn},
          {-1, 0, 0}, {0, 0}, {0, th}, {tw, th}, {tw, 0});
 
-    meshes.push_back(std::make_unique<Mesh>(device, pool, verts, indices));
+    meshes.push_back(std::make_unique<Mesh>(device, pool, verts, indices, true));
 }
 
 static void createBoxMesh(VulkanDevice& device, VkCommandPool pool,
@@ -294,6 +302,56 @@ void IndoorScene::init(VulkanDevice& device, VkCommandPool pool) {
     registry.emplace<VolumetricCone>(cone);
 
     logInfo("IndoorScene initialized ({} entities, {} meshes)", 8, meshes.size());
+}
+
+// DebugViewScene — same room seen from outside
+
+DebugViewScene::DebugViewScene() {
+    // Camera outside the room, looking at it
+    camera_start = {18, 12, 10};
+    camera_yaw = -145.0f;
+    camera_pitch = -20.0f;
+    light_pos = {0, 0, 6.0f};
+    light_color = {1, 1, 1};
+    light_dir = {0, 0, -1};
+    light_cone_angle = 0.0f;
+    fog_density = 0.0f;
+    fog_color = {0.05f, 0.05f, 0.08f};
+    skybox_enabled = true;
+    shadow_ortho_size = 15.0f;
+    shadow_far = 40.0f;
+
+    // Rays originate from inside the room, not the camera
+    has_debug_ray_origin = true;
+    debug_ray_origin = {3, 3, 1.2f};  // same as IndoorScene camera_start
+}
+
+void DebugViewScene::init(VulkanDevice& device, VkCommandPool pool) {
+    // [0] Outward-facing room box (rendered transparent via VolumetricCone tag)
+    createBoxMesh(device, pool, meshes, {5.0f, 5.0f, 4.0f}, {0, 0, 3.5f},
+                  {0.08f, 0.1f, 0.15f}, {0.5f, 0.5f});
+
+    // [1] Acoustic room mesh (inward normals, for ray tracing)
+    createRoomMesh(device, pool, meshes);
+
+    // [2] Small sphere to mark the ray origin point
+    glm::vec3 marker_color{1.0f, 0.3f, 0.3f};
+    createSphereMesh(device, pool, meshes, 0.15f, debug_ray_origin, marker_color, {0.5f, 0.5f},
+                     6, 8);
+
+    // Room entity (visible from outside, rendered with additive blend for transparency)
+    Entity room = registry.create();
+    registry.emplace<Transform>(room);
+    registry.emplace<MeshRenderer>(room).mesh = meshes[0].get();
+    registry.emplace<VolumetricCone>(room);
+
+    // Marker entity at ray origin
+    Entity marker = registry.create();
+    registry.emplace<Transform>(marker);
+    registry.emplace<MeshRenderer>(marker).mesh = meshes[2].get();
+    registry.emplace<Emissive>(marker);
+
+    logInfo("DebugViewScene initialized");
 }
 
 }  // namespace engine

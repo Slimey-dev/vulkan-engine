@@ -2,6 +2,7 @@
 
 #include <engine/core/audio.hpp>
 #include <engine/core/camera.hpp>
+#include <engine/core/spatial_audio.hpp>
 #include <engine/core/window.hpp>
 #include <engine/renderer/render_graph.hpp>
 #include <engine/renderer/vk_device.hpp>
@@ -73,6 +74,7 @@ private:
     std::vector<VkFence> in_flight_fences_;
     uint32_t current_frame_ = 0;
 
+    SpatialAudio spatial_audio_;
     Audio audio_;
     Camera camera_;
     float last_frame_time_ = 0.0f;
@@ -143,6 +145,17 @@ private:
     float bloom_intensity_ = 0.0f;
     glm::vec2 bloom_blur_h_dir_{};
     glm::vec2 bloom_blur_v_dir_{};
+
+    // Debug ray visualization
+    std::unique_ptr<VulkanPipeline> debug_line_pipeline_;
+    VulkanPipeline* debug_line_pipeline_ptr_ = nullptr;
+    VkBuffer debug_line_buffer_ = VK_NULL_HANDLE;
+    VkDeviceMemory debug_line_buffer_memory_ = VK_NULL_HANDLE;
+    uint32_t debug_line_vertex_count_ = 0;
+    bool show_debug_rays_ = false;
+    int debug_ray_count_ = 5;
+    int debug_ray_bounces_ = 4;
+    void updateDebugRays();
 
     // ImGui
     VkDescriptorPool imgui_pool_ = VK_NULL_HANDLE;

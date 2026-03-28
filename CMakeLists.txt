@@ -13,6 +13,11 @@ find_package(glm REQUIRED)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(CompileShaders)
 
+option(ENABLE_STEAM_AUDIO "Enable Steam Audio spatial audio" ON)
+if(ENABLE_STEAM_AUDIO)
+    find_package(SteamAudio)
+endif()
+
 add_subdirectory(engine)
 add_subdirectory(shaders)
 add_subdirectory(app)

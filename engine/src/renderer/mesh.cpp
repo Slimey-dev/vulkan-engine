@@ -13,8 +13,18 @@
 namespace engine {
 
 Mesh::Mesh(VulkanDevice& device, VkCommandPool command_pool,
-           const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices)
+           const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices,
+           bool retain_acoustic_data)
     : device_(device), index_count_(static_cast<uint32_t>(indices.size())) {
+    if (retain_acoustic_data) {
+        acoustic_mesh_ = std::make_unique<AcousticMesh>();
+        acoustic_mesh_->positions.reserve(vertices.size());
+        for (const auto& v : vertices) {
+            acoustic_mesh_->positions.push_back(v.position);
+        }
+        acoustic_mesh_->indices = indices;
+    }
+
     // Vertex buffer via staging
     VkDeviceSize vb_size = sizeof(Vertex) * vertices.size();
     VkBuffer staging;
@@ -96,7 +106,8 @@ struct IndexKeyHash {
 };
 
 std::unique_ptr<Mesh> Mesh::loadFromOBJ(VulkanDevice& device, VkCommandPool command_pool,
-                                        const std::string& filepath) {
+                                        const std::string& filepath,
+                                        bool retain_acoustic_data) {
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
@@ -160,7 +171,7 @@ std::unique_ptr<Mesh> Mesh::loadFromOBJ(VulkanDevice& device, VkCommandPool comm
 
     logInfo("Loaded OBJ: {} ({} vertices, {} indices)", filepath, vertices.size(), indices.size());
 
-    return std::make_unique<Mesh>(device, command_pool, vertices, indices);
+    return std::make_unique<Mesh>(device, command_pool, vertices, indices, retain_acoustic_data);
 }
 
 }  // namespace engine

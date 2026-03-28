@@ -46,69 +46,66 @@ void ShadowPass::record(VkCommandBuffer cmd, const RenderGraph& graph) {
 
 // --- ScenePass ---
 
-ScenePass::ScenePass(VulkanPipeline*& pipeline, VulkanPipeline*& skybox_pipeline,
-                     VulkanPipeline*& volumetric_pipeline, VulkanDescriptors*& descriptors,
-                     Scene*& scene, uint32_t& current_frame, VkBuffer& skybox_vertex_buffer,
-                     VkBuffer& skybox_index_buffer, uint32_t& skybox_index_count)
-    : pipeline_(pipeline),
-      skybox_pipeline_(skybox_pipeline),
-      volumetric_pipeline_(volumetric_pipeline),
-      descriptors_(descriptors),
-      scene_(scene),
-      current_frame_(current_frame),
-      skybox_vertex_buffer_(skybox_vertex_buffer),
-      skybox_index_buffer_(skybox_index_buffer),
-      skybox_index_count_(skybox_index_count) {}
+ScenePass::ScenePass(ScenePassContext ctx) : ctx_(ctx) {}
 
 void ScenePass::record(VkCommandBuffer cmd, const RenderGraph& graph) {
     setViewportAndScissor(cmd, extent);
 
-    // Skybox
-    if (scene_->skybox_enabled) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skybox_pipeline_->getHandle());
-        VkDescriptorSet skybox_set = descriptors_->getSkyboxSet(current_frame_);
+    if (ctx_.scene->skybox_enabled) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx_.skybox_pipeline->getHandle());
+        VkDescriptorSet skybox_set = ctx_.descriptors->getSkyboxSet(ctx_.current_frame);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                skybox_pipeline_->getLayout(), 0, 1, &skybox_set, 0, nullptr);
+                                ctx_.skybox_pipeline->getLayout(), 0, 1, &skybox_set, 0, nullptr);
         VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &skybox_vertex_buffer_, &offset);
-        vkCmdBindIndexBuffer(cmd, skybox_index_buffer_, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, skybox_index_count_, 1, 0, 0, 0);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &ctx_.skybox_vertex_buffer, &offset);
+        vkCmdBindIndexBuffer(cmd, ctx_.skybox_index_buffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, ctx_.skybox_index_count, 1, 0, 0, 0);
     }
 
-    // Opaque entities
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->getHandle());
-    VkDescriptorSet desc_set = descriptors_->getSet(current_frame_);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->getLayout(), 0, 1,
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx_.pipeline->getHandle());
+    VkDescriptorSet desc_set = ctx_.descriptors->getSet(ctx_.current_frame);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx_.pipeline->getLayout(), 0, 1,
                             &desc_set, 0, nullptr);
 
-    scene_->registry.each<Transform, MeshRenderer>(
+    ctx_.scene->registry.each<Transform, MeshRenderer>(
         [&](Entity e, Transform& t, MeshRenderer& mr) {
-            if (scene_->registry.has<VolumetricCone>(e)) return;
+            if (ctx_.scene->registry.has<VolumetricCone>(e)) return;
             PushConstants pc{};
             pc.model = t.matrix();
-            pc.emissive = scene_->registry.has<Emissive>(e) ? 1.0f : 0.0f;
-            vkCmdPushConstants(cmd, pipeline_->getLayout(),
+            pc.emissive = ctx_.scene->registry.has<Emissive>(e) ? 1.0f : 0.0f;
+            vkCmdPushConstants(cmd, ctx_.pipeline->getLayout(),
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                sizeof(PushConstants), &pc);
             mr.mesh->bind(cmd);
             mr.mesh->draw(cmd);
         });
 
-    // Volumetric cone (additive blend)
-    scene_->registry.each<Transform, MeshRenderer, VolumetricCone>(
+    ctx_.scene->registry.each<Transform, MeshRenderer, VolumetricCone>(
         [&](Entity, Transform& t, MeshRenderer& mr, VolumetricCone&) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              volumetric_pipeline_->getHandle());
+                              ctx_.volumetric_pipeline->getHandle());
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    volumetric_pipeline_->getLayout(), 0, 1, &desc_set, 0,
+                                    ctx_.volumetric_pipeline->getLayout(), 0, 1, &desc_set, 0,
                                     nullptr);
             PushConstants pc{};
             pc.model = t.matrix();
-            vkCmdPushConstants(cmd, volumetric_pipeline_->getLayout(), VK_SHADER_STAGE_VERTEX_BIT,
-                               0, sizeof(PushConstants), &pc);
+            vkCmdPushConstants(cmd, ctx_.volumetric_pipeline->getLayout(),
+                               VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pc);
             mr.mesh->bind(cmd);
             mr.mesh->draw(cmd);
         });
+
+    if (ctx_.show_debug_rays && ctx_.debug_line_buffer != VK_NULL_HANDLE &&
+        ctx_.debug_line_vertex_count > 0) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          ctx_.debug_line_pipeline->getHandle());
+        VkDescriptorSet desc = ctx_.descriptors->getSet(ctx_.current_frame);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                ctx_.debug_line_pipeline->getLayout(), 0, 1, &desc, 0, nullptr);
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &ctx_.debug_line_buffer, &offset);
+        vkCmdDraw(cmd, ctx_.debug_line_vertex_count, 1, 0, 0);
+    }
 }
 
 // --- BlitPass ---

@@ -18,11 +18,14 @@ struct CameraBounds {
     float max_z = 1e9f;
 };
 
+struct AcousticMesh;
+
 class Scene {
 public:
     virtual ~Scene() = default;
     virtual void init(VulkanDevice& device, VkCommandPool pool) = 0;
     virtual const char* name() const = 0;
+    virtual std::vector<const AcousticMesh*> getAcousticMeshes() const;
 
     Registry registry;
     std::vector<std::unique_ptr<Mesh>> meshes;
@@ -46,6 +49,10 @@ public:
 
     float bloom_threshold = 1.0f;
     float bloom_intensity = 0.0f;
+
+    // Debug ray origin override (if set, rays start here instead of camera)
+    bool has_debug_ray_origin = false;
+    glm::vec3 debug_ray_origin{0};
 };
 
 class OutdoorScene : public Scene {
@@ -59,6 +66,13 @@ public:
     IndoorScene();
     void init(VulkanDevice& device, VkCommandPool pool) override;
     const char* name() const override { return "Indoor"; }
+};
+
+class DebugViewScene : public Scene {
+public:
+    DebugViewScene();
+    void init(VulkanDevice& device, VkCommandPool pool) override;
+    const char* name() const override { return "Debug View"; }
 };
 
 }  // namespace engine

@@ -1,6 +1,7 @@
 add_library(VulkanEngine STATIC
     src/core/audio.cpp
     src/core/camera.cpp
+    src/core/spatial_audio.cpp
     src/core/window.cpp
     src/renderer/vk_instance.cpp
     src/renderer/vk_device.cpp
@@ -38,6 +39,11 @@ target_link_libraries(VulkanEngine
             glm::glm-header-only
     PRIVATE dl pthread m
 )
+
+if(SteamAudio_FOUND)
+    target_link_libraries(VulkanEngine PRIVATE SteamAudio::phonon)
+    target_compile_definitions(VulkanEngine PRIVATE ENGINE_STEAM_AUDIO=1)
+endif()
 
 if(APPLE)
     target_sources(VulkanEngine PRIVATE src/core/macos_fullscreen.mm)

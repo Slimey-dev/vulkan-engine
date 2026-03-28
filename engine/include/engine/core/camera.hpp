@@ -15,6 +15,8 @@ public:
     glm::mat4 getViewMatrix() const;
     glm::mat4 getProjectionMatrix(float aspect) const;
     glm::vec3 getPosition() const { return position_; }
+    glm::vec3 getFront() const { return front_; }
+    glm::vec3 getUp() const { return up_; }
 
     void processKeyboard(Window& window, float delta_time);
     void processMouse(float x_offset, float y_offset);

@@ -13,4 +13,6 @@ compile_shaders(
         "${CMAKE_CURRENT_SOURCE_DIR}/bloom_extract.frag"
         "${CMAKE_CURRENT_SOURCE_DIR}/bloom_blur.frag"
         "${CMAKE_CURRENT_SOURCE_DIR}/bloom_composite.frag"
+        "${CMAKE_CURRENT_SOURCE_DIR}/debug_line.vert"
+        "${CMAKE_CURRENT_SOURCE_DIR}/debug_line.frag"
 )

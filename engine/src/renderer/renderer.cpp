@@ -37,6 +37,7 @@ Renderer::Renderer(Window& window) : window_(window) {
         *device_, MAX_FRAMES_IN_FLIGHT, texture_->getImageView(), texture_->getSampler(),
         shadow_image_view_, shadow_sampler_, skybox_image_view_, skybox_sampler_);
 
+    audio_.setSpatialAudio(&spatial_audio_);
     loadScene(0);
     createSkyboxMesh();
     buildRenderGraph();
@@ -72,6 +73,11 @@ Renderer::~Renderer() {
     bloom_extract_pipeline_.reset();
     bloom_blur_pipeline_.reset();
     bloom_composite_pipeline_.reset();
+    debug_line_pipeline_.reset();
+    if (debug_line_buffer_ != VK_NULL_HANDLE) {
+        vkDestroyBuffer(device_->getHandle(), debug_line_buffer_, nullptr);
+        vkFreeMemory(device_->getHandle(), debug_line_buffer_memory_, nullptr);
+    }
     cleanupBloomDescriptors();
     descriptors_.reset();
     texture_.reset();
@@ -214,12 +220,16 @@ void Renderer::updateUBO() {
         window_.getScrollDelta();
     }
 
-    if (camera_.didJump()) audio_.playJump();
-    if (camera_.didLand()) audio_.playLand();
+    if (camera_.didJump()) audio_.playJump(camera_.getPosition());
+    if (camera_.didLand()) audio_.playLand(camera_.getPosition());
+
+    spatial_audio_.setListener(camera_.getPosition(), camera_.getFront(), camera_.getUp());
+    spatial_audio_.simulate();
 
     // Scene switching
     if (window_.isKeyPressed(GLFW_KEY_1) && current_scene_index_ != 0) loadScene(0);
     if (window_.isKeyPressed(GLFW_KEY_2) && current_scene_index_ != 1) loadScene(1);
+    if (window_.isKeyPressed(GLFW_KEY_3) && current_scene_index_ != 2) loadScene(2);
 
     // Update Rotator system
     scene_->registry.each<Transform, Rotator>(
@@ -228,7 +238,7 @@ void Renderer::updateUBO() {
     // ImGui debug panel
     {
         ImGui::Begin("Engine Debug");
-        ImGui::Text("Scene: %s [1/2]", scene_->name());
+        ImGui::Text("Scene: %s [1/2/3]", scene_->name());
         ImGui::Text("FPS: %.1f (%.3f ms)", 1.0f / delta_time, delta_time * 1000.0f);
 
         glm::vec3 cam_pos = camera_.getPosition();
@@ -248,8 +258,23 @@ void Renderer::updateUBO() {
         ImGui::SliderFloat("Bloom Intensity", &bloom_intensity_, 0.0f, 3.0f, "%.2f");
 
         ImGui::Separator();
+        ImGui::Text("Spatial Audio");
+        ImGui::Checkbox("Enabled##spatial", &spatial_audio_.enabled);
+        ImGui::Checkbox("HRTF", &spatial_audio_.hrtf_enabled);
+        ImGui::SliderFloat("Reverb Mix", &spatial_audio_.reverb_mix, 0.0f, 2.0f, "%.2f");
+        ImGui::Checkbox("Show Debug Rays", &show_debug_rays_);
+        if (show_debug_rays_) {
+            ImGui::SliderInt("Ray Count", &debug_ray_count_, 1, 12);
+            ImGui::SliderInt("Bounces", &debug_ray_bounces_, 1, 8);
+        }
+
+        ImGui::Separator();
         ImGui::Text("Press [Tab] to toggle UI/FPS mode");
         ImGui::End();
+    }
+
+    if (show_debug_rays_) {
+        updateDebugRays();
     }
 
     auto extent = swapchain_->getExtent();
@@ -413,9 +438,11 @@ void Renderer::buildRenderGraph() {
     builder.passWrites(shadow, shadow_map_id_, ResourceUsage::DepthAttachmentWrite);
 
     auto* scene_pass = builder.addPass<ScenePass>(
-        "scene", pipeline_ptr_, skybox_pipeline_ptr_, volumetric_pipeline_ptr_, descriptors_ptr_,
-        scene_ptr_, current_frame_, skybox_vertex_buffer_, skybox_index_buffer_,
-        skybox_index_count_);
+        "scene",
+        ScenePassContext{pipeline_ptr_, skybox_pipeline_ptr_, volumetric_pipeline_ptr_,
+                         debug_line_pipeline_ptr_, descriptors_ptr_, scene_ptr_, current_frame_,
+                         skybox_vertex_buffer_, skybox_index_buffer_, skybox_index_count_,
+                         debug_line_buffer_, debug_line_vertex_count_, show_debug_rays_});
     VkClearValue color_clear{};
     color_clear.color = {{fog_color_.x, fog_color_.y, fog_color_.z, 1.0f}};
     VkClearValue depth_clear{};
@@ -507,6 +534,21 @@ void Renderer::createPipelines() {
         std::vector<VkVertexInputAttributeDescription>(attributes.begin(), attributes.end()),
         descriptors_->getLayout(), vol_config);
 
+    // Debug line pipeline
+    PipelineConfig debug_line_config{};
+    debug_line_config.depth_write = false;
+    debug_line_config.cull_mode = VK_CULL_MODE_NONE;
+    debug_line_config.line_topology = true;
+    debug_line_config.has_push_constants = false;
+
+    debug_line_pipeline_ = std::make_unique<VulkanPipeline>(
+        device_->getHandle(), render_graph_->getRenderPass("scene"),
+        std::string(SHADER_DIR) + "debug_line.vert.spv",
+        std::string(SHADER_DIR) + "debug_line.frag.spv",
+        std::vector{binding},
+        std::vector<VkVertexInputAttributeDescription>(attributes.begin(), attributes.end()),
+        descriptors_->getLayout(), debug_line_config);
+
     // Skybox pipeline
     VkVertexInputBindingDescription skybox_binding{};
     skybox_binding.binding = 0;
@@ -584,6 +626,7 @@ void Renderer::createPipelines() {
     bloom_extract_pipeline_ptr_ = bloom_extract_pipeline_.get();
     bloom_blur_pipeline_ptr_ = bloom_blur_pipeline_.get();
     bloom_composite_pipeline_ptr_ = bloom_composite_pipeline_.get();
+    debug_line_pipeline_ptr_ = debug_line_pipeline_.get();
     descriptors_ptr_ = descriptors_.get();
     scene_ptr_ = scene_.get();
 }
@@ -969,6 +1012,136 @@ void Renderer::createSkyboxMesh() {
     logInfo("Skybox mesh created");
 }
 
+// Möller–Trumbore ray-triangle intersection
+static bool rayTriangle(glm::vec3 origin, glm::vec3 dir, glm::vec3 v0, glm::vec3 v1, glm::vec3 v2,
+                        float& t_out, glm::vec3& normal_out) {
+    glm::vec3 e1 = v1 - v0, e2 = v2 - v0;
+    glm::vec3 h = glm::cross(dir, e2);
+    float a = glm::dot(e1, h);
+    if (std::abs(a) < 1e-6f) return false;
+    float f = 1.0f / a;
+    glm::vec3 s = origin - v0;
+    float u = f * glm::dot(s, h);
+    if (u < 0.0f || u > 1.0f) return false;
+    glm::vec3 q = glm::cross(s, e1);
+    float v = f * glm::dot(dir, q);
+    if (v < 0.0f || u + v > 1.0f) return false;
+    float t = f * glm::dot(e2, q);
+    if (t < 0.001f) return false;
+    t_out = t;
+    normal_out = glm::normalize(glm::cross(e1, e2));
+    return true;
+}
+
+static glm::vec3 getBounceColor(int bounce) {
+    switch (bounce) {
+        case 0: return {1.0f, 0.0f, 0.0f};   // red
+        case 1: return {1.0f, 0.6f, 0.0f};   // orange
+        case 2: return {1.0f, 1.0f, 0.0f};   // yellow
+        case 3: return {0.0f, 1.0f, 0.0f};   // green
+        case 4: return {0.0f, 0.6f, 1.0f};   // cyan
+        case 5: return {0.2f, 0.2f, 1.0f};   // blue
+        case 6: return {0.7f, 0.0f, 1.0f};   // purple
+        default: return {1.0f, 0.0f, 0.6f};  // pink
+    }
+}
+
+// Max verts: 12 rays * 9 bounces * 2 verts per line = 216
+static constexpr uint32_t kMaxDebugLineVerts = 256;
+
+void Renderer::updateDebugRays() {
+    auto acoustic_meshes = scene_->getAcousticMeshes();
+    if (acoustic_meshes.empty()) {
+        debug_line_vertex_count_ = 0;
+        return;
+    }
+
+    // Allocate persistent buffer once
+    if (debug_line_buffer_ == VK_NULL_HANDLE) {
+        VkDeviceSize buf_size = sizeof(Vertex) * kMaxDebugLineVerts;
+        vk_buffer::createBuffer(*device_, buf_size,
+                                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                debug_line_buffer_, debug_line_buffer_memory_);
+    }
+
+    // Gather all triangles
+    struct Tri { glm::vec3 v0, v1, v2; };
+    std::vector<Tri> tris;
+    for (const auto* mesh : acoustic_meshes) {
+        if (!mesh) continue;
+        for (size_t i = 0; i + 2 < mesh->indices.size(); i += 3) {
+            tris.push_back({mesh->positions[mesh->indices[i]],
+                            mesh->positions[mesh->indices[i + 1]],
+                            mesh->positions[mesh->indices[i + 2]]});
+        }
+    }
+
+    std::vector<Vertex> line_verts;
+    glm::vec3 cam_pos = scene_->has_debug_ray_origin ? scene_->debug_ray_origin
+                                                      : camera_.getPosition();
+
+    constexpr float golden_angle = 2.399963f;
+
+    for (int r = 0; r < debug_ray_count_; r++) {
+        // Full sphere Fibonacci sampling: z ranges from +1 to -1
+        float z = 1.0f - (2.0f * r + 1.0f) / static_cast<float>(debug_ray_count_);
+        float rad = std::sqrt(1.0f - z * z);
+        float theta = golden_angle * r;
+        glm::vec3 dir = glm::normalize(
+            glm::vec3(rad * std::cos(theta), rad * std::sin(theta), z));
+
+        glm::vec3 origin = cam_pos;
+
+        for (int bounce = 0; bounce <= debug_ray_bounces_; bounce++) {
+            float closest_t = 1e9f;
+            glm::vec3 hit_normal{0};
+            bool hit = false;
+
+            for (const auto& tri : tris) {
+                float t;
+                glm::vec3 n;
+                if (rayTriangle(origin, dir, tri.v0, tri.v1, tri.v2, t, n) && t < closest_t) {
+                    closest_t = t;
+                    hit_normal = n;
+                    hit = true;
+                }
+            }
+
+            glm::vec3 color = getBounceColor(bounce);
+
+            if (!hit) {
+                glm::vec3 end = origin + dir * 3.0f;
+                line_verts.push_back({origin, color, {0, 0}, {0, 0, 0}});
+                line_verts.push_back({end, color * 0.3f, {0, 0}, {0, 0, 0}});
+                break;
+            }
+
+            glm::vec3 hit_point = origin + dir * closest_t;
+            line_verts.push_back({origin, color, {0, 0}, {0, 0, 0}});
+            line_verts.push_back({hit_point, color, {0, 0}, {0, 0, 0}});
+
+            if (glm::dot(dir, hit_normal) > 0) hit_normal = -hit_normal;
+            dir = glm::reflect(dir, hit_normal);
+            origin = hit_point + hit_normal * 0.01f;
+
+            if (line_verts.size() >= kMaxDebugLineVerts - 2) break;
+        }
+        if (line_verts.size() >= kMaxDebugLineVerts - 2) break;
+    }
+
+    debug_line_vertex_count_ = static_cast<uint32_t>(line_verts.size());
+
+    if (debug_line_vertex_count_ > 0) {
+        void* data;
+        vkMapMemory(device_->getHandle(), debug_line_buffer_memory_, 0,
+                     sizeof(Vertex) * debug_line_vertex_count_, 0, &data);
+        std::memcpy(data, line_verts.data(), sizeof(Vertex) * debug_line_vertex_count_);
+        vkUnmapMemory(device_->getHandle(), debug_line_buffer_memory_);
+    }
+}
+
 void Renderer::loadScene(int index) {
     if (scene_) {
         vkDeviceWaitIdle(device_->getHandle());
@@ -977,12 +1150,20 @@ void Renderer::loadScene(int index) {
 
     if (index == 1) {
         scene_ = std::make_unique<IndoorScene>();
+    } else if (index == 2) {
+        scene_ = std::make_unique<DebugViewScene>();
     } else {
         scene_ = std::make_unique<OutdoorScene>();
     }
     scene_->init(*device_, command_pool_);
     scene_ptr_ = scene_.get();
     current_scene_index_ = index;
+
+    spatial_audio_.clearScene();
+    auto acoustic_meshes = scene_->getAcousticMeshes();
+    if (!acoustic_meshes.empty()) {
+        spatial_audio_.buildScene(acoustic_meshes);
+    }
 
     camera_.reset(scene_->camera_start, scene_->camera_yaw, scene_->camera_pitch);
     camera_.setBounds(scene_->bounds.min_x, scene_->bounds.max_x,

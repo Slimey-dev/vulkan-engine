@@ -1,8 +1,13 @@
 #pragma once
 
+#include <glm/glm.hpp>
+
+#include <cstdint>
 #include <memory>
 
 namespace engine {
+
+class SpatialAudio;
 
 class Audio {
 public:
@@ -12,10 +17,16 @@ public:
     Audio(const Audio&) = delete;
     Audio& operator=(const Audio&) = delete;
 
-    void playJump();
-    void playLand();
+    void setSpatialAudio(SpatialAudio* spatial);
+
+    void playJump(glm::vec3 position);
+    void playLand(glm::vec3 position);
+
+    uint32_t playSound(int slot, glm::vec3 position);
+    void updateSoundPosition(uint32_t handle, glm::vec3 position);
 
 private:
+    void playSoundAtPosition(int slot, glm::vec3 position);
     struct SoundParams {
         float freq_start;
         float freq_end;
