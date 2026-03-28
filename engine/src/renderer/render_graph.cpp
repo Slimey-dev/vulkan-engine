@@ -1,5 +1,6 @@
 #include <vulkan/vulkan_core.h>
 #include <engine/core/log.hpp>
+#include <engine/renderer/gpu_profiler.hpp>
 #include <engine/renderer/render_graph.hpp>
 #include <engine/renderer/vk_buffer.hpp>
 #include <engine/renderer/vk_device.hpp>
@@ -106,6 +107,7 @@ void RenderGraph::execute(VkCommandBuffer cmd, uint32_t swapchain_image_index,
         resources_[idx].current_layout = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
+    uint32_t pass_idx = 0;
     for (auto& step : steps_) {
         auto& pass = passes_[step.pass_index];
 
@@ -129,6 +131,10 @@ void RenderGraph::execute(VkCommandBuffer cmd, uint32_t swapchain_image_index,
                                  nullptr, 1, &img_barrier);
 
             res.current_layout = barrier.new_layout;
+        }
+
+        if (profiler_) {
+            profiler_->beginPass(cmd, current_frame, pass_idx, pass->name);
         }
 
         if (!pass->is_transfer_pass) {
@@ -158,6 +164,12 @@ void RenderGraph::execute(VkCommandBuffer cmd, uint32_t swapchain_image_index,
         } else {
             pass->record(cmd, *this);
         }
+
+        if (profiler_) {
+            profiler_->endPass(cmd, current_frame, pass_idx);
+        }
+
+        pass_idx++;
     }
 }
 

@@ -18,6 +18,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <array>
+#include <cfloat>
 #include <chrono>
 #include <cstring>
 #include <stdexcept>
@@ -41,6 +42,8 @@ Renderer::Renderer(Window& window) : window_(window) {
     loadScene(0);
     createSkyboxMesh();
     buildRenderGraph();
+    gpu_profiler_ = std::make_unique<GpuProfiler>(*device_);
+    render_graph_->setProfiler(gpu_profiler_.get());
     createBloomDescriptors();
     createPipelines();
     createCommandBuffers();
@@ -83,6 +86,7 @@ Renderer::~Renderer() {
     texture_.reset();
 
     render_graph_.reset();
+    gpu_profiler_.reset();
 
     vkDestroySampler(device_->getHandle(), shadow_sampler_, nullptr);
     vkDestroyImageView(device_->getHandle(), shadow_image_view_, nullptr);
@@ -108,6 +112,7 @@ Renderer::~Renderer() {
 void Renderer::drawFrame() {
     vkWaitForFences(device_->getHandle(), 1, &in_flight_fences_[current_frame_], VK_TRUE,
                     UINT64_MAX);
+    gpu_profiler_->beginFrame(current_frame_);
 
     uint32_t image_index;
     VkResult result = vkAcquireNextImageKHR(device_->getHandle(), swapchain_->getHandle(),
@@ -270,6 +275,63 @@ void Renderer::updateUBO() {
 
         ImGui::Separator();
         ImGui::Text("Press [Tab] to toggle UI/FPS mode");
+        ImGui::End();
+    }
+
+    {
+        ImGui::Begin("GPU Profiler");
+
+        const auto& timings = gpu_profiler_->getPassTimings();
+        float total_ms = gpu_profiler_->getTotalGpuTimeMs();
+
+        ImGui::Text("GPU Frame: %.3f ms", total_ms);
+
+        {
+            ImVec2 bar_size(ImGui::GetContentRegionAvail().x, 24.0f);
+            ImVec2 cursor = ImGui::GetCursorScreenPos();
+            ImDrawList* draw_list = ImGui::GetWindowDrawList();
+
+            static const ImU32 colors[] = {
+                IM_COL32(220, 60, 60, 255),
+                IM_COL32(60, 180, 75, 255),
+                IM_COL32(70, 130, 230, 255),
+                IM_COL32(245, 180, 50, 255),
+                IM_COL32(180, 80, 220, 255),
+                IM_COL32(60, 200, 200, 255),
+                IM_COL32(240, 130, 50, 255),
+                IM_COL32(160, 160, 160, 255),
+            };
+            constexpr int kNumColors = sizeof(colors) / sizeof(colors[0]);
+
+            float x_offset = 0.0f;
+            for (size_t i = 0; i < timings.size(); i++) {
+                float seg_width = (timings[i].percentage / 100.0f) * bar_size.x;
+                ImVec2 p0(cursor.x + x_offset, cursor.y);
+                ImVec2 p1(p0.x + seg_width, cursor.y + bar_size.y);
+                draw_list->AddRectFilled(p0, p1, colors[i % kNumColors]);
+                x_offset += seg_width;
+            }
+
+            draw_list->AddRect(cursor,
+                               ImVec2(cursor.x + bar_size.x, cursor.y + bar_size.y),
+                               IM_COL32(255, 255, 255, 100));
+            ImGui::Dummy(bar_size);
+        }
+
+        ImGui::Separator();
+        for (size_t i = 0; i < timings.size(); i++) {
+            ImGui::Text("  %s: %.3f ms (%.1f%%)", timings[i].name.c_str(), timings[i].ms,
+                        timings[i].percentage);
+        }
+
+        ImGui::Separator();
+        ImGui::Text("Frame History (ms)");
+        const auto& history = gpu_profiler_->getHistoryMs();
+        int offset = static_cast<int>(gpu_profiler_->getHistoryOffset());
+        ImGui::PlotLines("##gpu_history", history.data(),
+                         static_cast<int>(history.size()), offset, nullptr, 0.0f, FLT_MAX,
+                         ImVec2(ImGui::GetContentRegionAvail().x, 80.0f));
+
         ImGui::End();
     }
 
@@ -1299,6 +1361,7 @@ void Renderer::recreateSwapchain() {
     cleanupBloomDescriptors();
     render_graph_.reset();
     buildRenderGraph();
+    render_graph_->setProfiler(gpu_profiler_.get());
     createBloomDescriptors();
 
     // Recreate pipelines with new render passes

@@ -4,6 +4,7 @@
 #include <engine/core/camera.hpp>
 #include <engine/core/spatial_audio.hpp>
 #include <engine/core/window.hpp>
+#include <engine/renderer/gpu_profiler.hpp>
 #include <engine/renderer/render_graph.hpp>
 #include <engine/renderer/vk_device.hpp>
 #include <engine/renderer/vk_instance.hpp>
@@ -108,6 +109,9 @@ private:
     VkBuffer skybox_index_buffer_ = VK_NULL_HANDLE;
     VkDeviceMemory skybox_index_memory_ = VK_NULL_HANDLE;
     uint32_t skybox_index_count_ = 0;
+
+    // GPU profiler
+    std::unique_ptr<GpuProfiler> gpu_profiler_;
 
     // Render graph
     static constexpr uint32_t PIXEL_SCALE = 8;

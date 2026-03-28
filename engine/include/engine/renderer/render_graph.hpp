@@ -10,6 +10,7 @@
 
 namespace engine {
 
+class GpuProfiler;
 class VulkanDevice;
 class VulkanSwapchain;
 
@@ -105,6 +106,7 @@ public:
     RenderGraph& operator=(const RenderGraph&) = delete;
 
     void execute(VkCommandBuffer cmd, uint32_t swapchain_image_index, uint32_t current_frame);
+    void setProfiler(GpuProfiler* profiler) { profiler_ = profiler; }
 
     const PhysicalResource& getResource(ResourceId id) const;
     VkRenderPass getRenderPass(const std::string& pass_name) const;
@@ -116,6 +118,7 @@ private:
     friend class RenderGraphBuilder;
 
     VkDevice device_;
+    GpuProfiler* profiler_ = nullptr;
     std::vector<std::unique_ptr<RenderPassNode>> passes_;
     std::vector<PhysicalResource> resources_;
     std::vector<ExecutionStep> steps_;

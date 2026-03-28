@@ -13,6 +13,7 @@ add_library(VulkanEngine STATIC
     src/renderer/vk_descriptors.cpp
     src/renderer/renderer.cpp
     src/renderer/render_graph.cpp
+    src/renderer/gpu_profiler.cpp
     src/renderer/passes/render_passes.cpp
     src/renderer/scene.cpp
     ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui.cpp

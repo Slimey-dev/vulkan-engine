@@ -61,6 +61,17 @@ void VulkanDevice::pickPhysicalDevice(VkInstance instance, VkSurfaceKHR surface)
     }
 
     queue_families_ = findQueueFamilies(physical_device_, surface);
+
+    // Cache timestamp properties from device and graphics queue family
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(physical_device_, &props);
+    timestamp_period_ = props.limits.timestampPeriod;
+
+    uint32_t qf_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device_, &qf_count, nullptr);
+    std::vector<VkQueueFamilyProperties> qf_props(qf_count);
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device_, &qf_count, qf_props.data());
+    timestamp_valid_bits_ = qf_props[queue_families_.graphics.value()].timestampValidBits;
 }
 
 void VulkanDevice::createLogicalDevice() {
@@ -78,8 +89,20 @@ void VulkanDevice::createLogicalDevice() {
         queue_infos.push_back(info);
     }
 
-    VkPhysicalDeviceFeatures features{};
-    features.samplerAnisotropy = VK_TRUE;
+    // Build feature chain: Features2 -> Vulkan13Features -> Vulkan12Features
+    VkPhysicalDeviceVulkan12Features features12{};
+    features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    features12.hostQueryReset = VK_TRUE;
+
+    VkPhysicalDeviceVulkan13Features features13{};
+    features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    features13.pNext = &features12;
+    features13.synchronization2 = VK_TRUE;
+
+    VkPhysicalDeviceFeatures2 features2{};
+    features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features2.pNext = &features13;
+    features2.features.samplerAnisotropy = VK_TRUE;
 
     std::vector<const char*> device_extensions(kDeviceExtensions.begin(), kDeviceExtensions.end());
     if (portability_subset_) {
@@ -88,9 +111,10 @@ void VulkanDevice::createLogicalDevice() {
 
     VkDeviceCreateInfo create_info{};
     create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    create_info.pNext = &features2;
     create_info.queueCreateInfoCount = static_cast<uint32_t>(queue_infos.size());
     create_info.pQueueCreateInfos = queue_infos.data();
-    create_info.pEnabledFeatures = &features;
+    create_info.pEnabledFeatures = nullptr;
     create_info.enabledExtensionCount = static_cast<uint32_t>(device_extensions.size());
     create_info.ppEnabledExtensionNames = device_extensions.data();
 
